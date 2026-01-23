@@ -1,7 +1,8 @@
 streamlit
-pandas
 pytesseract
 opencv-python-headless
+pandas
+openpyxl
 Pillow
 fuzzywuzzy
 python-Levenshtein
