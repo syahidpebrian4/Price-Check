@@ -6,3 +6,4 @@ openpyxl
 fuzzywuzzy
 python-Levenshtein
 Pillow
+st-gsheets-connection
