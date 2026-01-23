@@ -3,9 +3,7 @@ easyocr
 opencv-python-headless
 numpy
 pandas
-Pillow
+pillow
 openpyxl
 fuzzywuzzy
 python-Levenshtein
-st-gsheets-connection
-xlsxwriter
