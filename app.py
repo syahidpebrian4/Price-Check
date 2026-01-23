@@ -10,7 +10,10 @@ import zipfile
 from fuzzywuzzy import fuzz
 from streamlit_gsheets import GSheetsConnection
 
-# ================= CONFIG =================
+# ================= CONFIG (LINK LANGSUNG) =================
+# Link ini ditanam langsung agar menghindari Error 400 dari Secrets
+URL_DB = "https://docs.google.com/spreadsheets/d/1vz2tEQ7YbFuKSF172ihDFBh6YE3F4QlljSEOpptZN34/edit?usp=sharing"
+
 SHEETS_TARGET = ["DF", "HBHC"]
 SHEET_MASTER_IG = "IG" 
 COL_IG_NAME = "PRODNAME_IG" 
@@ -32,13 +35,11 @@ def process_ocr_all_prices(pil_image):
     img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
     original_pil = pil_image.copy()
 
-    # Pre-processing untuk akurasi deteksi harga
     img_resized = cv2.resize(img_np, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_LANCZOS4)
     gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
     processed = cv2.bilateralFilter(gray, 9, 75, 75)
     
     results = reader.readtext(processed, detail=1)
-
     data = []
     for (bbox, text, prob) in results:
         y_center = (bbox[0][1] + bbox[2][1]) / 2
@@ -65,12 +66,10 @@ def process_ocr_all_prices(pil_image):
 
     if not df_ocr.empty:
         df_ocr = df_ocr.sort_values(by='top').reset_index(drop=True)
-        # Cari Nama Produk
         idx_search = df_ocr[df_ocr['text'].str.contains("CARI DI KLIK|SEMUA KATEGORI", na=False)].index
         if not idx_search.empty and (idx_search[-1] + 1) < len(df_ocr):
             scanned_name = df_ocr.iloc[idx_search[-1] + 1]['text']
 
-        # Cari Harga Satuan
         idx_pilih = df_ocr[df_ocr['text'].str.contains("PILIH SATUAN", na=False)].index
         if not idx_pilih.empty:
             area = df_ocr.iloc[idx_pilih[0]:]
@@ -79,13 +78,11 @@ def process_ocr_all_prices(pil_image):
                 rows = df_ocr.iloc[idx_pcs[0] : idx_pcs[0] + 3]
                 final_res["PCS"] = extract_prices_smart(" # ".join(rows['text'].tolist()))
 
-        # Cari Harga Karton
         idx_ctn = df_ocr[df_ocr['text'].str.contains("CTN|KARTON|DUS", na=False)].index
         if not idx_ctn.empty:
             rows_ctn = df_ocr.iloc[idx_ctn[0] : idx_ctn[0] + 3]
             final_res["CTN"] = extract_prices_smart(" # ".join(rows_ctn['text'].tolist()))
 
-    # --- Auto-Redact Data Pribadi ---
     draw = ImageDraw.Draw(original_pil)
     results_redact = reader.readtext(cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY), detail=1)
     for (bbox, text, prob) in results_redact:
@@ -122,14 +119,17 @@ files = st.file_uploader("📂 Upload Foto Product", type=["jpg", "png", "jpeg"]
 
 if files and m_code_input and date_input and week_input:
     try:
-        # Koneksi Spreadsheet
+        # KONEKSI MENGGUNAKAN URL INTERNAL
         conn = st.connection("gsheets", type=GSheetsConnection)
-        db_ig = conn.read(worksheet=SHEET_MASTER_IG, ttl=0)
+        
+        # Baca Sheet IG
+        db_ig = conn.read(spreadsheet=URL_DB, worksheet=SHEET_MASTER_IG, ttl=0)
         db_ig.columns = db_ig.columns.astype(str).str.strip()
         
+        # Baca Sheet Target (DF & HBHC)
         db_targets = {}
         for s in SHEETS_TARGET:
-            df_t = conn.read(worksheet=s, ttl=0)
+            df_t = conn.read(spreadsheet=URL_DB, worksheet=s, ttl=0)
             df_t.columns = df_t.columns.astype(str).str.strip()
             db_targets[s] = df_t
             
@@ -149,7 +149,6 @@ if files and m_code_input and date_input and week_input:
                 img_pil = Image.open(f)
                 res_pcs, res_ctn, s_name, red_pil = process_ocr_all_prices(img_pil)
                 
-                # Matching Produk via Fuzzy
                 found_code, best_score = None, 0
                 for _, row in db_ig.iterrows():
                     score = fuzz.token_set_ratio(str(row[COL_IG_NAME]).upper(), s_name)
@@ -171,7 +170,6 @@ if files and m_code_input and date_input and week_input:
                             "n_ctn": res_ctn['normal'], "p_ctn": res_ctn['promo']
                         })
                         
-                        # Compress & Add to ZIP
                         w, h = red_pil.size
                         crop = red_pil.crop((0, 75, w, h)) if h > 75 else red_pil
                         zip_file.writestr(f"{found_code}.jpg", compress_to_target(crop, TARGET_IMAGE_SIZE_KB))
@@ -188,7 +186,6 @@ if files and m_code_input and date_input and week_input:
             res_df = pd.DataFrame(final_list)
             st.table(res_df[["prodcode", "sheet", "n_pcs", "p_pcs", "n_ctn", "p_ctn"]])
             
-            # FITUR UPDATE OTOMATIS KE SPREADSHEET
             if st.button("🚀 UPDATE HARGA KE SPREADSHEET"):
                 with st.spinner("Sedang menyimpan ke Google Sheets..."):
                     for s_name in SHEETS_TARGET:
@@ -200,13 +197,10 @@ if files and m_code_input and date_input and week_input:
                                 df_up.at[i, "Promo Competitor Price (Pcs)"] = r['p_pcs']
                                 df_up.at[i, "Normal Competitor Price (Ctn)"] = r['n_ctn']
                                 df_up.at[i, "Promo Competitor Price (Ctn)"] = r['p_ctn']
-                        # Menimpa data di worksheet terkait
-                        conn.update(worksheet=s_name, data=df_up)
+                        conn.update(spreadsheet=URL_DB, worksheet=s_name, data=df_up)
                     st.success("✅ Spreadsheet Berhasil Diperbarui secara Permanen!")
 
-            # Tombol Download ZIP
             zip_filename = f"{m_code_input}_{date_input}.zip"
             st.download_button("🖼️ DOWNLOAD ZIP JPG", zip_buffer.getvalue(), zip_filename)
     else:
         st.error(f"Kolom '{COL_IG_NAME}' tidak ditemukan di sheet IG.")
-
