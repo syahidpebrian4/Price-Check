@@ -1,9 +1,11 @@
 streamlit
 easyocr
 opencv-python-headless
+numpy
 pandas
+Pillow
 openpyxl
 fuzzywuzzy
 python-Levenshtein
-Pillow
 st-gsheets-connection
+xlsxwriter
