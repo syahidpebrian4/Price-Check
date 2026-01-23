@@ -4,21 +4,18 @@ import cv2
 import numpy as np
 import pandas as pd
 import re
-import os
 from PIL import Image, ImageDraw
-from openpyxl import load_workbook
 import io
 import zipfile
 from fuzzywuzzy import fuzz
+from streamlit_gsheets import GSheetsConnection
 
 # ================= CONFIG =================
-FILE_PATH = "database/master_harga.xlsx"
 SHEETS_TARGET = ["DF", "HBHC"]
 SHEET_MASTER_IG = "IG" 
 COL_IG_NAME = "PRODNAME_IG" 
 TARGET_IMAGE_SIZE_KB = 195 
 
-# Teks yang ingin di-redact (bisa lebih dari satu)
 TEXTS_TO_REDACT = ["HALO AI YUYUN SUMARNI", "AL YUYUN SUMARNI", "Halo WAYAN GIYANTO / WRG", "Halo MEMBER UMUM KLIK", "Halo DJUANMING / TK GOGO", "Halo NONOK JUNENGSIH", "Halo AGUNG KURNIAWAN", "Halo ARIF RAMADHAN", "Halo HILMI ATIQ / WR DINDA"]
 
 st.set_page_config(page_title="Price Check", layout="wide")
@@ -30,12 +27,10 @@ def load_reader():
 reader = load_reader()
 
 # ==================================================
-# CORE OCR ENGINE (LOGIKA ASLI V10.5 + AUTO-REDACT)
+# CORE OCR ENGINE
 # ==================================================
 def process_ocr_all_prices(pil_image):
     img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-    
-    # Simpan original image untuk redaksi nanti
     original_pil_for_redact = pil_image.copy()
 
     # Logika OCR untuk deteksi harga
@@ -79,7 +74,6 @@ def process_ocr_all_prices(pil_image):
 
     if not df_ocr.empty:
         df_ocr = df_ocr.sort_values(by='top').reset_index(drop=True)
-        
         idx_search = df_ocr[df_ocr['text'].str.contains("CARI DI KLIK|SEMUA KATEGORI", na=False)].index
         if not idx_search.empty and (idx_search[-1] + 1) < len(df_ocr):
             product_name_on_image = df_ocr.iloc[idx_search[-1] + 1]['text']
@@ -99,7 +93,7 @@ def process_ocr_all_prices(pil_image):
             all_text_ctn = " # ".join(target_rows_ctn['text'].tolist())
             final_results["CTN"] = extract_prices_smart(all_text_ctn)
 
-    # --- Bagian Auto-Redact ---
+    # --- Auto-Redact ---
     draw = ImageDraw.Draw(original_pil_for_redact)
     temp_img_for_redact = cv2.resize(img_np, None, fx=1.0, fy=1.0, interpolation=cv2.INTER_AREA)
     results_redact = reader.readtext(cv2.cvtColor(temp_img_for_redact, cv2.COLOR_BGR2GRAY), detail=1, paragraph=False)
@@ -112,14 +106,7 @@ def process_ocr_all_prices(pil_image):
                 y_min = int(min(top_left[1], top_right[1]))
                 x_max = int(max(top_right[0], bottom_right[0]))
                 y_max = int(max(bottom_left[1], bottom_right[1]))
-                
-                padding = 5
-                x_min = max(0, x_min - padding)
-                y_min = max(0, y_min - padding)
-                x_max = min(original_pil_for_redact.width, x_max + padding)
-                y_max = min(original_pil_for_redact.height, y_max + padding)
-
-                draw.rectangle([(x_min, y_min), (x_max, y_max)], fill="white")
+                draw.rectangle([(x_min-5, y_min-5), (x_max+5, y_max+5)], fill="white")
                 break
 
     return final_results["PCS"], final_results["CTN"], processed_for_ocr, product_name_on_image, original_pil_for_redact
@@ -140,7 +127,6 @@ def norm(val):
 
 st.title("📸 Price Check")
 
-# Penambahan Input Baru
 col_input1, col_input2, col_input3 = st.columns(3)
 with col_input1:
     m_code_input = st.text_input("📍 Masukkan Master Code").strip().upper()
@@ -151,38 +137,33 @@ with col_input3:
 
 files = st.file_uploader("📂 Upload Foto Product", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
-# Validasi semua input harus terisi
 if files and m_code_input and date_input and week_input:
-    db_ig, db_targets = None, {}
-    
-    if os.path.exists(FILE_PATH):
-        try:
-            xl = pd.ExcelFile(FILE_PATH)
-            if SHEET_MASTER_IG in xl.sheet_names:
-                db_ig = xl.parse(SHEET_MASTER_IG)
-                db_ig.columns = db_ig.columns.astype(str).str.strip()
-            
-            for s in SHEETS_TARGET:
-                if s in xl.sheet_names:
-                    df_t = xl.parse(s)
-                    df_t.columns = df_t.columns.astype(str).str.strip()
-                    db_targets[s] = df_t
-        except Exception as e:
-            st.error(f"Error loading Excel: {e}")
+    # --- KONEKSI GOOGLE SHEETS ---
+    try:
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        db_ig = conn.read(worksheet=SHEET_MASTER_IG, ttl="1m")
+        db_ig.columns = db_ig.columns.astype(str).str.strip()
+        
+        db_targets = {}
+        for s in SHEETS_TARGET:
+            df_t = conn.read(worksheet=s, ttl="1m")
+            df_t.columns = df_t.columns.astype(str).str.strip()
+            db_targets[s] = df_t
+    except Exception as e:
+        st.error(f"Gagal memuat data dari Spreadsheet: {e}")
+        st.stop()
 
-    if db_ig is not None and COL_IG_NAME in db_ig.columns:
+    if COL_IG_NAME in db_ig.columns:
         final_list = []
         zip_buffer = io.BytesIO()
-        
         progress_bar = st.progress(0)
         status_text = st.empty()
 
         with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
             for idx, f in enumerate(files):
                 status_text.text(f"⏳ Memproses {f.name} ({idx+1}/{len(files)})...")
-                
                 img_pil = Image.open(f)
-                res_pcs, res_ctn, debug_img, scanned_name, redacted_image_pil = process_ocr_all_prices(img_pil)
+                res_pcs, res_ctn, _, scanned_name, redacted_pil = process_ocr_all_prices(img_pil)
                 
                 found_prodcode, best_score = None, 0
                 for _, row in db_ig.iterrows():
@@ -211,19 +192,18 @@ if files and m_code_input and date_input and week_input:
                             "n_ctn": res_ctn['normal'], "p_ctn": res_ctn['promo']
                         })
                         
-                        w, h = redacted_image_pil.size
-                        img_cropped = redacted_image_pil.crop((0, 75, w, h)) if h > 75 else redacted_image_pil
-                        img_bytes = compress_to_target(img_cropped, TARGET_IMAGE_SIZE_KB)
-                        zip_file.writestr(f"{found_prodcode}.jpg", img_bytes)
+                        w, h = redacted_pil.size
+                        img_cropped = redacted_pil.crop((0, 75, w, h)) if h > 75 else redacted_pil
+                        zip_file.writestr(f"{found_prodcode}.jpg", compress_to_target(img_cropped, TARGET_IMAGE_SIZE_KB))
                         
                         with st.expander(f"✅ Match: {found_prodcode}"):
                             st.write(f"Scanned: {scanned_name}")
                             st.json({"PCS": res_pcs, "CTN": res_ctn})
-                            st.image(redacted_image_pil, caption="Gambar setelah Redaksi")
+                            st.image(redacted_pil)
                     else:
-                        st.warning(f"⚠️ {found_prodcode} ada di IG, tapi tak ada di DF/HBHC (MC: {m_code_input})")
+                        st.warning(f"⚠️ {found_prodcode} tidak ada di DF/HBHC (MC: {m_code_input})")
                 else:
-                    st.error(f"❌ '{scanned_name}' tak cocok di sheet IG.")
+                    st.error(f"❌ '{scanned_name}' tak cocok di IG.")
                 
                 progress_bar.progress((idx + 1) / len(files))
 
@@ -231,35 +211,19 @@ if files and m_code_input and date_input and week_input:
 
         if final_list:
             st.write("### 📋 Ringkasan")
-            st.table(pd.DataFrame(final_list)[["prodcode", "sheet", "n_pcs", "p_pcs", "n_ctn", "p_ctn"]])
+            res_df = pd.DataFrame(final_list)
+            st.table(res_df[["prodcode", "sheet", "n_pcs", "p_pcs", "n_ctn", "p_ctn"]])
             
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                if st.button("🚀 UPDATE DATABASE EXCEL"):
-                    wb = load_workbook(FILE_PATH)
-                    for r in final_list:
-                        ws = wb[r['sheet']]
-                        headers = [str(c.value).strip() for c in ws[1]]
-                        row_num = r['index'] + 2
-                        mapping = {
-                            "Normal Competitor Price (Pcs)": r['n_pcs'],
-                            "Promo Competitor Price (Pcs)": r['p_pcs'],
-                            "Normal Competitor Price (Ctn)": r['n_ctn'],
-                            "Promo Competitor Price (Ctn)": r['p_ctn']
-                        }
-                        for col_name, val in mapping.items():
-                            if col_name in headers:
-                                ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
-                    wb.save(FILE_PATH)
-                    st.success("Database Updated!")
-            
-            # --- Penamaan File Sesuai Instruksi ---
             excel_filename = f"Price Check W{week_input}_{date_input}.xlsx"
             zip_filename = f"{m_code_input}_{date_input}.zip"
 
-            with c2: 
-                st.download_button("📥 DOWNLOAD EXCEL", open(FILE_PATH, "rb"), excel_filename)
-            with c3: 
+            col_btn1, col_btn2 = st.columns(2)
+            with col_btn1:
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    res_df.to_excel(writer, index=False, sheet_name='Summary')
+                st.download_button("📥 DOWNLOAD SUMMARY EXCEL", output.getvalue(), excel_filename)
+            with col_btn2:
                 st.download_button("🖼️ DOWNLOAD ZIP JPG", zip_buffer.getvalue(), zip_filename)
     else:
         st.error(f"Kolom '{COL_IG_NAME}' tidak ditemukan di sheet IG.")
