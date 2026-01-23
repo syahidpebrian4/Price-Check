@@ -1,5 +1,5 @@
 import streamlit as st
-import easyocr
+import pytesseract
 import cv2
 import numpy as np
 import pandas as pd
@@ -8,190 +8,153 @@ from PIL import Image, ImageDraw
 import io
 import zipfile
 from fuzzywuzzy import fuzz
+import gc
 
 # ================= CONFIG =================
 URL_BASE = "https://docs.google.com/spreadsheets/d/1vz2tEQ7YbFuKSF172ihDFBh6YE3F4Ql1jSEOpptZN34"
 SHEET_MASTER_IG = "IG"
-COL_IG_NAME = "PRODNAME_IG"
-TARGET_IMAGE_SIZE_KB = 195 
 
-# Daftar Sensor (Redaksi)
 TEXTS_TO_REDACT = [
-    "HALO AI YUYUN SUMARNI", "AL YUYUN SUMARNI", "Halo WAYAN GIYANTO / WRG", 
-    "Halo MEMBER UMUM KLIK", "Halo DJUANMING / TK GOGO", "Halo NONOK JUNENGSIH", 
-    "Halo AGUNG KURNIAWAN", "Halo ARIF RAMADHAN", "Halo HILMI ATIQ / WR DINDA"
+    "HALO AI YUYUN SUMARNI", "AL YUYUN SUMARNI", "WAYAN GIYANTO", 
+    "MEMBER UMUM KLIK", "DJUANMING", "NONOK JUNENGSIH", 
+    "AGUNG KURNIAWAN", "ARIF RAMADHAN", "HILMI ATIQ"
 ]
 
-st.set_page_config(page_title="Price Check AI V10.5", layout="wide")
+st.set_page_config(page_title="Price Check Tesseract V1.0", layout="wide")
 
-@st.cache_resource
-def load_reader():
-    return easyocr.Reader(['en'], gpu=False) 
+# --- Logika Pembersihan Harga (Sama dengan V10.5) ---
+def clean_price(raw):
+    # Tesseract terkadang salah baca angka jadi huruf
+    trans = {'O': '0', 'I': '1', 'L': '1', 'S': '5', 'B': '8', 'E': '8', 'G': '6', 'Z': '2', 'A': '4'}
+    txt = re.sub(r'[\s.,\-]', '', str(raw))
+    for c, d in trans.items(): txt = txt.replace(c, d)
+    nums = re.findall(r'\d{3,7}', txt)
+    return int(nums[0]) if nums else 0
 
-reader = load_reader()
-
-# ==================================================
-# CORE OCR ENGINE (LOGIKA ASLI V10.5 + AUTO-REDACT)
-# ==================================================
-def process_ocr_all_prices(pil_image):
-    img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-    original_pil_for_redact = pil_image.copy()
-
-    # Logika Pre-processing V10.5
-    img_resized_for_ocr = cv2.resize(img_np, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_LANCZOS4)
-    gray_for_ocr = cv2.cvtColor(img_resized_for_ocr, cv2.COLOR_BGR2GRAY)
-    processed_for_ocr = cv2.bilateralFilter(gray_for_ocr, 9, 75, 75)
+def extract_prices_smart(text_content):
+    text_content = text_content.upper()
+    text_content = re.sub(r'\(.*?\)|ISI\s*\d+', '', text_content)
+    found_prices = []
+    parts = text_content.split('RP')
+    for part in parts[1:]:
+        p = clean_price(part.split('/')[0])
+        if p > 500: found_prices.append(p)
     
-    results_ocr_prices = reader.readtext(processed_for_ocr, detail=1)
+    if not found_prices: return {"normal": 0, "promo": 0}
+    if len(found_prices) >= 2:
+        return {"normal": max(found_prices), "promo": min(found_prices)}
+    return {"normal": found_prices[0], "promo": found_prices[0]}
 
-    data = []
-    for (bbox, text, prob) in results_ocr_prices:
-        y_center = (bbox[0][1] + bbox[2][1]) / 2
-        data.append({"text": text.upper(), "top": y_center, "bbox": bbox})
+# --- Fungsi OCR Utama menggunakan Tesseract ---
+def process_with_tesseract(pil_img):
+    # Pre-processing dasar untuk Tesseract
+    img_np = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
     
-    df_ocr = pd.DataFrame(data)
-    final_results = {"PCS": {"normal": 0, "promo": 0}, "CTN": {"normal": 0, "promo": 0}}
-    product_name_on_image = ""
+    # Tesseract mengambil data per baris (data frame)
+    # config: --psm 6 (Asumsi blok teks seragam)
+    custom_config = r'--oem 3 --psm 6'
+    d = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT)
+    
+    n_boxes = len(d['text'])
+    full_text_list = []
+    
+    # Gabungkan teks per baris secara kasar berdasarkan koordinat 'top'
+    # Ini mensimulasikan logika data_ocr sebelumnya
+    for i in range(n_boxes):
+        if int(d['conf'][i]) > 30: # Hanya ambil yang yakin
+            full_text_list.append({
+                "text": d['text'][i].upper(),
+                "top": d['top'][i],
+                "left": d['left'][i],
+                "width": d['width'][i],
+                "height": d['height'][i]
+            })
 
-    def clean_and_repair_price(raw_segment):
-        translation_table = {'O': '0', 'I': '1', 'L': '1', 'S': '5', 'B': '8', 'E': '8', 'G': '6', 'Z': '2', '+': '', 'A': '4'}
-        text = re.sub(r'[\s.,\-]', '', str(raw_segment))
-        for char, digit in translation_table.items():
-            text = text.replace(char, digit)
-        nums = re.findall(r'\d{3,7}', text)
-        return int(nums[0]) if nums else 0
-
-    def extract_prices_smart(text_content):
-        text_content = re.sub(r'\(.*?\)|ISI\s*\d+', '', text_content)
-        found_prices = []
-        parts = text_content.split('RP')
-        for part in parts[1:]:
-            target_segment = part.split('/')[0]
-            price = clean_and_repair_price(target_segment)
-            if price and price > 0: found_prices.append(price)
-        
-        if not found_prices: return {"normal": 0, "promo": 0}
-        if len(found_prices) >= 2:
-            return {"normal": found_prices[0], "promo": found_prices[1]}
-        else:
-            return {"normal": found_prices[0], "promo": found_prices[0]}
+    df_ocr = pd.DataFrame(full_text_list)
+    res = {"PCS": {"normal": 0, "promo": 0}, "CTN": {"normal": 0, "promo": 0}}
+    p_name = ""
 
     if not df_ocr.empty:
+        # Sortir berdasarkan posisi vertikal (atas ke bawah)
         df_ocr = df_ocr.sort_values(by='top').reset_index(drop=True)
         
-        # Deteksi Nama Produk
-        idx_search = df_ocr[df_ocr['text'].str.contains("CARI DI KLIK|SEMUA KATEGORI", na=False)].index
-        if not idx_search.empty and (idx_search[-1] + 1) < len(df_ocr):
-            product_name_on_image = df_ocr.iloc[idx_search[-1] + 1]['text']
+        # Cari Nama Produk (Logika Cari di Klik)
+        idx_search = df_ocr[df_ocr['text'].str.contains("CARI|KLIK|SEMUA", na=False)].index
+        if not idx_search.empty:
+            # Ambil 5 kata setelah index "Cari" untuk membentuk nama produk
+            start_idx = idx_search[-1] + 1
+            p_name = " ".join(df_ocr.iloc[start_idx : start_idx+5]['text'].tolist())
 
-        # Deteksi Harga PCS
-        idx_pilih = df_ocr[df_ocr['text'].str.contains("PILIH SATUAN", na=False)].index
-        if not idx_pilih.empty:
-            search_area = df_ocr.iloc[idx_pilih[0]:]
-            idx_pcs = search_area[search_area['text'].str.contains("PCS|RCG|BOX|PCK", na=False)].index
-            if not idx_pcs.empty:
-                target_rows = df_ocr.iloc[idx_pcs[0] : idx_pcs[0] + 3]
-                all_text = " # ".join(target_rows['text'].tolist())
-                final_results["PCS"] = extract_prices_smart(all_text)
-
-        # Deteksi Harga CTN
-        idx_ctn = df_ocr[df_ocr['text'].str.contains("CTN|KARTON|DUS", na=False)].index
-        if not idx_ctn.empty:
-            target_rows_ctn = df_ocr.iloc[idx_ctn[0] : idx_ctn[0] + 3]
-            all_text_ctn = " # ".join(target_rows_ctn['text'].tolist())
-            final_results["CTN"] = extract_prices_smart(all_text_ctn)
-
-    # --- Bagian Auto-Redact ---
-    draw = ImageDraw.Draw(original_pil_for_redact)
-    # Gunakan deteksi paragraph=False untuk akurasi posisi redaksi
-    results_redact = reader.readtext(cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY), detail=1)
-
-    for (bbox, text, prob) in results_redact:
-        for keyword in TEXTS_TO_REDACT:
-            if fuzz.partial_ratio(keyword.upper(), text.upper()) > 85:
-                (tl, tr, br, bl) = bbox
-                draw.rectangle([tl[0]-5, tl[1]-5, br[0]+5, br[1]+5], fill="white")
-                break
-
-    return final_results["PCS"], final_results["CTN"], product_name_on_image, original_pil_for_redact
-
-def compress_to_target(pil_img, target_kb):
-    if pil_img.mode in ("RGBA", "P"): pil_img = pil_img.convert("RGB")
-    quality = 95
-    buf = io.BytesIO()
-    while quality > 10:
-        buf = io.BytesIO()
-        pil_img.save(buf, format="JPEG", quality=quality, optimize=True)
-        if buf.tell() / 1024 <= target_kb: return buf.getvalue()
-        quality -= 5
-    return buf.getvalue()
-
-def get_data_fixed(sheet_name):
-    try:
-        csv_url = f"{URL_BASE}/export?format=csv&sheet={sheet_name}"
-        df = pd.read_csv(csv_url, usecols=[0, 1], on_bad_lines='skip', engine='python')
-        df.columns = ["PRODCODE", "PRODNAME_IG"]
-        df = df.dropna(subset=["PRODCODE", "PRODNAME_IG"]).reset_index(drop=True)
-        df["PRODCODE"] = df["PRODCODE"].astype(str).str.strip()
-        df["PRODNAME_IG"] = df["PRODNAME_IG"].astype(str).apply(lambda x: x.strip().upper())
-        return df
-    except Exception as e:
-        st.error(f"Gagal memuat database: {e}")
-        return None
-
-# ================= UI STREAMLIT =================
-st.title("📸 Price Check AI V10.5")
-
-c1, c2, c3 = st.columns(3)
-with c1: m_code_in = st.text_input("📍 Master Code").strip().upper()
-with c2: tgl_in = st.text_input("📅 Tanggal (Ex: 23JAN2026)").strip().upper()
-with c3: week_in = st.text_input("🗓️ Week").strip()
-
-files = st.file_uploader("📂 Upload Foto", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
-
-if files and m_code_in:
-    db_ig = get_data_fixed(SHEET_MASTER_IG)
-    
-    if db_ig is not None:
-        st.success(f"✅ Database IG Terhubung ({len(db_ig)} Produk)")
+        # Deteksi Harga (Cari baris yang mengandung satuan)
+        full_string = " ".join(df_ocr['text'].tolist())
         
-        final_list = []
-        zip_buffer = io.BytesIO()
+        # Simulasikan area pencarian PCS dan CTN
+        if "PILIH" in full_string or "SATUAN" in full_string:
+            res["PCS"] = extract_prices_smart(full_string)
+        if "CTN" in full_string or "KARTON" in full_string or "DUS" in full_string:
+            res["CTN"] = extract_prices_smart(full_string)
 
-        with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
-            for f in files:
-                img_pil = Image.open(f)
-                res_pcs, res_ctn, s_name, red_img = process_ocr_all_prices(img_pil)
+    # Redaksi (Sensor Putih)
+    draw = ImageDraw.Draw(pil_img)
+    for i in range(n_boxes):
+        text = d['text'][i].upper()
+        for kw in TEXTS_TO_REDACT:
+            if kw.split()[0] in text: # Cek kata pertama keyword
+                x, y, w, h = d['left'][i], d['top'][i], d['width'][i], d['height'][i]
+                draw.rectangle([x-2, y-2, x+w+2, y+h+2], fill="white")
+
+    return res, p_name, pil_img
+
+# --- UI UTAMA ---
+st.title("📸 Price Check AI (Tesseract Mode)")
+
+with st.sidebar:
+    m_code = st.text_input("Master Code").upper()
+    tgl = st.text_input("Tanggal").upper()
+
+files = st.file_uploader("Upload Foto", type=["jpg","jpeg","png"], accept_multiple_files=True)
+
+if files and m_code:
+    # Load Database
+    csv_url = f"{URL_BASE}/export?format=csv&sheet={SHEET_MASTER_IG}"
+    db = pd.read_csv(csv_url, usecols=[0, 1], on_bad_lines='skip', engine='python')
+    db.columns = ["PRODCODE", "PRODNAME_IG"]
+    db = db.dropna().reset_index(drop=True)
+    db["PRODNAME_IG"] = db["PRODNAME_IG"].astype(str).str.upper()
+
+    zip_buffer = io.BytesIO()
+    final_table = []
+
+    with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED) as zf:
+        for f in files:
+            with st.status(f"Proses {f.name}...") as s:
+                img_obj = Image.open(f)
+                res_prices, scanned_name, red_img = process_with_tesseract(img_obj)
                 
-                # Matching Logic
-                best_code, max_score = None, 0
-                for _, row in db_ig.iterrows():
-                    score = fuzz.token_set_ratio(row["PRODNAME_IG"], s_name)
-                    if score > 80 and score > max_score:
-                        max_score, best_code = score, row["PRODCODE"]
+                # Matching
+                match_code, best_score = None, 0
+                for _, row in db.iterrows():
+                    score = fuzz.partial_ratio(row["PRODNAME_IG"], scanned_name)
+                    if score > 70 and score > best_score:
+                        best_score, match_code = score, row["PRODCODE"]
                 
-                if best_code:
-                    with st.expander(f"✅ Match: {best_code}"):
-                        st.write(f"Nama Scan: **{s_name}**")
-                        st.json({"PCS": res_pcs, "CTN": res_ctn})
-                        st.image(red_img, width=400)
-                        
-                        # Simpan ke ZIP (dengan Kompresi target 195KB)
-                        img_bytes = compress_to_target(red_img, TARGET_IMAGE_SIZE_KB)
-                        zip_file.writestr(f"{best_code}.jpg", img_bytes)
-                        
-                        final_list.append({
-                            "PRODCODE": best_code, 
-                            "N_PCS": res_pcs['normal'], "P_PCS": res_pcs['promo'],
-                            "N_CTN": res_ctn['normal'], "P_CTN": res_ctn['promo']
-                        })
+                if match_code:
+                    img_io = io.BytesIO()
+                    red_img.save(img_io, format="JPEG", quality=80)
+                    zf.writestr(f"{match_code}.jpg", img_io.getvalue())
+                    
+                    final_table.append({
+                        "CODE": match_code,
+                        "N_PCS": res_prices["PCS"]["normal"],
+                        "P_PCS": res_prices["PCS"]["promo"]
+                    })
+                    s.update(label=f"✅ {match_code}", state="complete")
                 else:
-                    st.warning(f"⚠️ Tidak Dikenali: {s_name}")
+                    st.warning(f"Gagal deteksi nama di {f.name}")
+                
+                gc.collect()
 
-        if final_list:
-            st.write("### 📋 Ringkasan Hasil Scan")
-            st.dataframe(pd.DataFrame(final_list))
-            
-            # Tombol Download
-            zip_fn = f"{m_code_in}_{tgl_in}.zip"
-            st.download_button("📥 Download ZIP (JPG 195KB)", zip_buffer.getvalue(), zip_fn)
+    if final_table:
+        st.dataframe(pd.DataFrame(final_table))
+        st.download_button("📥 Download ZIP", zip_buffer.getvalue(), f"{m_code}_{tgl}.zip")
