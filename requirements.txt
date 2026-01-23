@@ -1,9 +1,8 @@
 streamlit
+pandas
 easyocr
 opencv-python-headless
-numpy
-pandas
 Pillow
 fuzzywuzzy
 python-Levenshtein
-st-gsheets-connection
+streamlit-gsheets
