@@ -19,7 +19,7 @@ TARGET_IMAGE_SIZE_KB = 195
 # Daftar teks untuk sensor otomatis
 TEXTS_TO_REDACT = ["HALO AI YUYUN SUMARNI", "AL YUYUN SUMARNI", "Halo WAYAN GIYANTO / WRG", "Halo MEMBER UMUM KLIK", "Halo DJUANMING / TK GOGO", "Halo NONOK JUNENGSIH", "Halo AGUNG KURNIAWAN", "Halo ARIF RAMADHAN", "Halo HILMI ATIQ / WR DINDA"]
 
-st.set_page_config(page_title="Price Check AI", layout="wide")
+st.set_page_config(page_title="Price Check", layout="wide")
 
 @st.cache_resource
 def load_reader():
@@ -111,7 +111,7 @@ def compress_to_target(pil_img, target_kb):
 def norm(val):
     return str(val).replace(".0", "").replace(" ", "").strip().upper()
 
-st.title("📸 Price Check AI (Spreadsheet Mode)")
+st.title("📸 Price Check")
 
 col_input1, col_input2, col_input3 = st.columns(3)
 with col_input1: m_code_input = st.text_input("📍 Master Code").strip().upper()
@@ -209,3 +209,4 @@ if files and m_code_input and date_input and week_input:
             st.download_button("🖼️ DOWNLOAD ZIP JPG", zip_buffer.getvalue(), zip_filename)
     else:
         st.error(f"Kolom '{COL_IG_NAME}' tidak ditemukan di sheet IG.")
+
