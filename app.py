@@ -11,7 +11,6 @@ from fuzzywuzzy import fuzz
 from streamlit_gsheets import GSheetsConnection
 
 # ================= CONFIG =================
-# FILE_PATH tidak lagi digunakan untuk baca, tapi bisa tetap ada jika ingin simpan cache
 SHEETS_TARGET = ["DF", "HBHC"]
 SHEET_MASTER_IG = "IG" 
 COL_IG_NAME = "PRODNAME_IG" 
@@ -34,7 +33,7 @@ def process_ocr_all_prices(pil_image):
     img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
     original_pil_for_redact = pil_image.copy()
 
-    # Resize untuk OCR
+    # Logika OCR untuk deteksi harga
     img_resized_for_ocr = cv2.resize(img_np, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_LANCZOS4)
     gray_for_ocr = cv2.cvtColor(img_resized_for_ocr, cv2.COLOR_BGR2GRAY)
     processed_for_ocr = cv2.bilateralFilter(gray_for_ocr, 9, 75, 75)
@@ -94,7 +93,7 @@ def process_ocr_all_prices(pil_image):
             all_text_ctn = " # ".join(target_rows_ctn['text'].tolist())
             final_results["CTN"] = extract_prices_smart(all_text_ctn)
 
-    # --- Bagian Auto-Redact ---
+    # --- Auto-Redact ---
     draw = ImageDraw.Draw(original_pil_for_redact)
     temp_img_for_redact = cv2.resize(img_np, None, fx=1.0, fy=1.0, interpolation=cv2.INTER_AREA)
     results_redact = reader.readtext(cv2.cvtColor(temp_img_for_redact, cv2.COLOR_BGR2GRAY), detail=1, paragraph=False)
@@ -103,8 +102,10 @@ def process_ocr_all_prices(pil_image):
         for keyword in TEXTS_TO_REDACT:
             if fuzz.partial_ratio(keyword.upper(), text.upper()) > 85:
                 (top_left, top_right, bottom_right, bottom_left) = bbox
-                x_min, y_min = int(min(top_left[0], bottom_left[0])), int(min(top_left[1], top_right[1]))
-                x_max, y_max = int(max(top_right[0], bottom_right[0])), int(max(bottom_left[1], bottom_right[1]))
+                x_min = int(min(top_left[0], bottom_left[0]))
+                y_min = int(min(top_left[1], top_right[1]))
+                x_max = int(max(top_right[0], bottom_right[0]))
+                y_max = int(max(bottom_left[1], bottom_right[1]))
                 draw.rectangle([(x_min-5, y_min-5), (x_max+5, y_max+5)], fill="white")
                 break
 
@@ -148,9 +149,8 @@ if files and m_code_input and date_input and week_input:
             df_t = conn.read(worksheet=s, ttl="1m")
             df_t.columns = df_t.columns.astype(str).str.strip()
             db_targets[s] = df_t
-            
     except Exception as e:
-        st.error(f"Gagal koneksi ke Google Sheets: {e}")
+        st.error(f"Gagal memuat data dari Spreadsheet: {e}")
         st.stop()
 
     if COL_IG_NAME in db_ig.columns:
@@ -165,7 +165,6 @@ if files and m_code_input and date_input and week_input:
                 img_pil = Image.open(f)
                 res_pcs, res_ctn, _, scanned_name, redacted_pil = process_ocr_all_prices(img_pil)
                 
-                # Matching
                 found_prodcode, best_score = None, 0
                 for _, row in db_ig.iterrows():
                     db_name = str(row[COL_IG_NAME]).upper()
@@ -193,43 +192,40 @@ if files and m_code_input and date_input and week_input:
                             "n_ctn": res_ctn['normal'], "p_ctn": res_ctn['promo']
                         })
                         
-                        # Compress & Zip
                         w, h = redacted_pil.size
                         img_cropped = redacted_pil.crop((0, 75, w, h)) if h > 75 else redacted_pil
                         zip_file.writestr(f"{found_prodcode}.jpg", compress_to_target(img_cropped, TARGET_IMAGE_SIZE_KB))
                         
                         with st.expander(f"✅ Match: {found_prodcode}"):
+                            st.write(f"Scanned: {scanned_name}")
                             st.json({"PCS": res_pcs, "CTN": res_ctn})
-                            st.image(redacted_pil, width=400)
+                            st.image(redacted_pil)
                     else:
-                        st.warning(f"⚠️ {found_prodcode} tidak ditemukan di sheet target (DF/HBHC).")
+                        st.warning(f"⚠️ {found_prodcode} tidak ada di DF/HBHC (MC: {m_code_input})")
                 else:
-                    st.error(f"❌ '{scanned_name}' tidak cocok di Master IG.")
+                    st.error(f"❌ '{scanned_name}' tak cocok di IG.")
                 
                 progress_bar.progress((idx + 1) / len(files))
 
-        status_text.success("Pemrosesan Selesai!")
+        status_text.success("Selesai!")
 
         if final_list:
-            st.write("### 📋 Ringkasan Hasil")
+            st.write("### 📋 Ringkasan")
             res_df = pd.DataFrame(final_list)
             st.table(res_df[["prodcode", "sheet", "n_pcs", "p_pcs", "n_ctn", "p_ctn"]])
             
-            # Catatan: Fitur 'UPDATE DATABASE' via GSheetsConnection memerlukan akses write khusus.
-            # Untuk saat ini, user bisa download file hasil untuk referensi.
-            
-            excel_filename = f"Price_Check_W{week_input}_{date_input}.xlsx"
+            excel_filename = f"Price Check W{week_input}_{date_input}.xlsx"
             zip_filename = f"{m_code_input}_{date_input}.zip"
 
-            col_dl1, col_dl2 = st.columns(2)
-            with col_dl1:
-                # Simpan Ringkasan ke Excel sementara untuk didownload
+            col_btn1, col_btn2 = st.columns(2)
+            with col_btn1:
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     res_df.to_excel(writer, index=False, sheet_name='Summary')
                 st.download_button("📥 DOWNLOAD SUMMARY EXCEL", output.getvalue(), excel_filename)
-            with col_dl2:
-                st.download_button("🖼️ DOWNLOAD ZIP FOTO", zip_buffer.getvalue(), zip_filename)
-
+            with col_btn2:
+                st.download_button("🖼️ DOWNLOAD ZIP JPG", zip_buffer.getvalue(), zip_filename)
     else:
-        st.error(f"Kolom '{COL_IG_NAME}' tidak ditemukan di Spreadsheet.")
+        st.error(f"Kolom '{COL_IG_NAME}' tidak ditemukan di sheet IG.")
+elif files:
+    st.info("Mohon lengkapi Master Code, Tanggal, dan Week untuk melanjutkan.")
