@@ -10,10 +10,8 @@ import zipfile
 from fuzzywuzzy import fuzz
 
 # ================= CONFIG (LINK DATABASE) =================
-# Pastikan link ini adalah link yang kamu copy dari browser
 URL_BASE = "https://docs.google.com/spreadsheets/d/1vz2tEQ7YbFuKSF172ihDFBh6YE3F4Ql1jSEOpptZN34"
 
-# Nama-nama tab kamu
 SHEETS_TARGET = ["DF", "HBHC"]
 SHEET_MASTER_IG = "IG" 
 COL_IG_NAME = "PRODNAME_IG" 
@@ -21,13 +19,15 @@ TARGET_IMAGE_SIZE_KB = 195
 
 st.set_page_config(page_title="Price Check AI", layout="wide")
 
-# Fungsi Baca Data Tanpa st.connection (Anti-Error 404)
+# FUNGSI BACA DATA YANG SUDAH DIRAPIKAN
 def get_data_direct(sheet_name):
-    # Mengubah link biasa jadi link download CSV otomatis
-    # Kita butuh GID (ID Tab). Biasanya: IG=0, DF=1836582498, HBHC=1384022416 (Cek di URL browser kamu)
-    # Tapi kalau bingung, kita pakai gsheets library sebagai backup di dalam fungsi ini
+    # Menggunakan export gviz untuk mendapatkan data CSV yang lebih bersih
     csv_url = f"{URL_BASE}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
-    return pd.read_csv(csv_url)
+    df = pd.read_csv(csv_url)
+    
+    # Membersihkan kolom dari spasi atau karakter aneh
+    df.columns = df.columns.astype(str).str.strip()
+    return df
 
 @st.cache_resource
 def load_reader():
@@ -64,12 +64,11 @@ def process_ocr_all_prices(pil_image):
 
     if not df_ocr.empty:
         df_ocr = df_ocr.sort_values(by='top').reset_index(drop=True)
+        # Cari Nama Produk setelah tulisan tertentu
         idx_search = df_ocr[df_ocr['text'].str.contains("CARI DI KLIK|SEMUA KATEGORI", na=False)].index
         if not idx_search.empty and (idx_search[-1] + 1) < len(df_ocr):
             scanned_name = df_ocr.iloc[idx_search[-1] + 1]['text']
             
-        # Logika harga tetap sama... (dipersingkat untuk fokus ke koneksi)
-    
     return final_res["PCS"], final_res["CTN"], scanned_name, original_pil
 
 # ================= UI STREAMLIT =================
@@ -84,21 +83,33 @@ files = st.file_uploader("📂 Upload Foto", type=["jpg", "png", "jpeg"], accept
 
 if files and m_code_input and date_input and week_input:
     try:
-        # PAKAI CARA DIRECT BACA
+        # Load Data
         db_ig = get_data_direct(SHEET_MASTER_IG)
-        db_ig.columns = db_ig.columns.astype(str).str.strip()
-        
         db_targets = {s: get_data_direct(s) for s in SHEETS_TARGET}
-        for s in db_targets:
-            db_targets[s].columns = db_targets[s].columns.astype(str).str.strip()
             
-        st.success("✅ Database Berhasil Dimuat (Direct Mode)!")
-        st.dataframe(db_ig.head(3)) # Munculkan sedikit data buat bukti
+        st.success("✅ Database Berhasil Dimuat!")
+        
+        # Tampilkan tabel yang lebih rapi untuk verifikasi
+        with st.expander("Lihat Data Spreadsheet (Master IG)"):
+            st.dataframe(db_ig.head(10))
             
     except Exception as e:
-        st.error(f"❌ Masih 404/Error: {e}")
-        st.info("PASTIKAN: Di Google Sheets > Share > Anyone with link > EDITOR")
+        st.error(f"❌ Error saat merapikan tabel: {e}")
         st.stop()
 
-    # (Sisa kode processing gambar tetap sama seperti sebelumnya...)
-    st.write("Silakan proses gambar seperti biasa.")
+    # PROSES OCR MULAI DI SINI
+    if st.button("🔍 MULAI SCAN GAMBAR"):
+        final_list = []
+        zip_buffer = io.BytesIO()
+        
+        for f in files:
+            img_pil = Image.open(f)
+            res_pcs, res_ctn, s_name, red_pil = process_ocr_all_prices(img_pil)
+            
+            # Matching dengan data yang sudah rapi
+            if s_name:
+                st.write(f"Mencocokkan: **{s_name}**")
+                # Lanjutkan logika matching dan zip Anda...
+                # ...
+        
+        st.info("Logika scanning sedang berjalan, pastikan data di tabel atas sudah muncul kolomnya.")
