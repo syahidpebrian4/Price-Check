@@ -16,17 +16,19 @@ SHEET_MASTER_IG = "IG"
 COL_IG_NAME = "PRODNAME_IG" 
 TARGET_IMAGE_SIZE_KB = 195 
 
+# Daftar Sensor (Redaksi)
 TEXTS_TO_REDACT = ["HALO AI YUYUN SUMARNI", "AL YUYUN SUMARNI", "Halo WAYAN GIYANTO / WRG", 
-                   "Halo MEMBER UMUM KLIK", "Halo DJUANMING / TK GOGO", "Halo NONOK JUNENGSIH"]
+                   "MEMBER UMUM KLIK", "DJUANMING / TK GOGO", "NONOK JUNENGSIH"]
 
 st.set_page_config(page_title="Price Check AI", layout="wide")
 
-# Fungsi Baca Data Direct
+# --- Fungsi Baca Data Anti-Error ---
 def get_data_direct(sheet_name):
     try:
         csv_url = f"{URL_BASE}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
         df = pd.read_csv(csv_url)
-        df.columns = df.columns.astype(str).str.strip()
+        # Bersihkan nama kolom: Hilangkan spasi & ubah ke huruf besar
+        df.columns = [str(c).strip().upper() for c in df.columns]
         return df
     except Exception as e:
         st.error(f"Gagal memuat sheet {sheet_name}: {e}")
@@ -34,34 +36,26 @@ def get_data_direct(sheet_name):
 
 @st.cache_resource
 def load_reader():
-    # Load model sekali saja untuk hemat RAM
-    return easyocr.Reader(['en'], gpu=False) 
+    return easyocr.Reader(['en'], gpu=False)
 
-# ================= CORE OCR ENGINE =================
+# --- Logika OCR & Redaksi ---
 def process_ocr_all_prices(pil_image, reader):
     img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
     original_pil = pil_image.copy()
     
-    # Pre-processing ringan agar tidak crash
+    # Pre-processing ringan
     img_resized = cv2.resize(img_np, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_LINEAR)
     gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
     
     results = reader.readtext(gray, detail=1)
-    data = []
+    
+    df_ocr_list = []
     for (bbox, text, prob) in results:
         y_center = (bbox[0][1] + bbox[2][1]) / 2
-        data.append({"text": text.upper(), "top": y_center, "bbox": bbox})
+        df_ocr_list.append({"text": text.upper(), "top": y_center, "bbox": bbox})
     
-    df_ocr = pd.DataFrame(data)
-    final_res = {"PCS": {"normal": 0, "promo": 0}, "CTN": {"normal": 0, "promo": 0}}
+    df_ocr = pd.DataFrame(df_ocr_list)
     scanned_name = ""
-
-    def clean_repair_price(raw):
-        trans = {'O': '0', 'I': '1', 'L': '1', 'S': '5', 'B': '8', 'E': '8', 'G': '6', 'Z': '2'}
-        text = re.sub(r'[\s.,\-]', '', str(raw))
-        for char, digit in trans.items(): text = text.replace(char, digit)
-        nums = re.findall(r'\d{3,7}', text)
-        return int(nums[0]) if nums else 0
 
     if not df_ocr.empty:
         df_ocr = df_ocr.sort_values(by='top').reset_index(drop=True)
@@ -69,22 +63,23 @@ def process_ocr_all_prices(pil_image, reader):
         if not idx_search.empty and (idx_search[-1] + 1) < len(df_ocr):
             scanned_name = df_ocr.iloc[idx_search[-1] + 1]['text']
             
-    # Sensor Redaksi Sederhana
+    # Sensor Data Pribadi
     draw = ImageDraw.Draw(original_pil)
-    for item in data:
+    for item in df_ocr_list:
         for kw in TEXTS_TO_REDACT:
             if kw.upper() in item['text']:
-                bbox = item['bbox']
-                draw.rectangle([bbox[0][0]/1.5, bbox[0][1]/1.5, bbox[2][0]/1.5, bbox[2][1]/1.5], fill="white")
+                box = item['bbox']
+                # Skala ulang box karena gambar asli berbeda ukuran dengan yang di-resize
+                draw.rectangle([box[0][0]/1.5, box[0][1]/1.5, box[2][0]/1.5, box[2][1]/1.5], fill="white")
 
-    return final_res["PCS"], final_res["CTN"], scanned_name, original_pil
+    return scanned_name, original_pil
 
-# ================= UI =================
-st.title("📸 Price Check AI (Stable Mode)")
+# --- UI UTAMA ---
+st.title("📸 Price Check AI")
 
 col1, col2, col3 = st.columns(3)
 with col1: m_code = st.text_input("📍 Master Code").strip().upper()
-with col2: tgl = st.text_input("📅 Tanggal").strip().upper()
+with col2: tgl = st.text_input("📅 Tanggal (23JAN2026)").strip().upper()
 with col3: week = st.text_input("🗓️ Week").strip()
 
 files = st.file_uploader("📂 Upload Foto", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
@@ -93,30 +88,52 @@ if files and m_code:
     db_ig = get_data_direct(SHEET_MASTER_IG)
     
     if db_ig is not None:
-        st.success("✅ Database Terhubung!")
+        # Validasi Kolom (Mencegah KeyError)
+        target_col = COL_IG_NAME.strip().upper()
+        prodcode_col = "PRODCODE" # Sesuaikan jika di Excel namanya lain
+        
+        if target_col not in db_ig.columns:
+            st.error(f"❌ Kolom '{target_col}' tidak ditemukan! Nama kolom yang ada: {list(db_ig.columns)}")
+            st.stop()
+            
+        st.success(f"✅ Database IG Terhubung. (Total: {len(db_ig)} produk)")
         reader = load_reader()
         
         final_list = []
-        for f in files:
-            img_pil = Image.open(f)
-            res_pcs, res_ctn, s_name, red_img = process_ocr_all_prices(img_pil, reader)
-            
-            # Fuzzy Matching
-            best_match = None
-            max_score = 0
-            for _, row in db_ig.iterrows():
-                score = fuzz.token_set_ratio(str(row[COL_IG_NAME]), s_name)
-                if score > 80 and score > max_score:
-                    max_score = score
-                    best_match = str(row["PRODCODE"])
-            
-            if best_match:
-                st.write(f"✔️ Cocok: **{best_match}** ({s_name})")
-                final_list.append({"PRODCODE": best_match, "NAME": s_name})
-            else:
-                st.warning(f"❓ Tidak dikenal: {s_name}")
-            
-            st.image(red_img, width=300)
+        zip_buffer = io.BytesIO()
+
+        with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
+            for idx, f in enumerate(files):
+                img_pil = Image.open(f)
+                s_name, red_img = process_ocr_all_prices(img_pil, reader)
+                
+                # Matching
+                best_match_code = None
+                max_score = 0
+                for _, row in db_ig.iterrows():
+                    score = fuzz.token_set_ratio(str(row[target_col]), s_name)
+                    if score > 80 and score > max_score:
+                        max_score = score
+                        best_match_code = str(row[prodcode_col])
+                
+                if best_match_code:
+                    with st.expander(f"✅ Berhasil: {best_match_code}"):
+                        st.write(f"Nama Scan: {s_name}")
+                        st.image(red_img, width=400)
+                        
+                        # Masukkan ke ZIP
+                        img_byte_arr = io.BytesIO()
+                        red_img.save(img_byte_arr, format='JPEG', quality=85)
+                        zip_file.writestr(f"{best_match_code}.jpg", img_byte_arr.getvalue())
+                        
+                        final_list.append({"PRODCODE": best_match_code, "NAME_SCAN": s_name})
+                else:
+                    st.warning(f"⚠️ Gagal mencocokkan: {s_name}")
 
         if final_list:
-            st.info("Logika update GSheets siap. Gunakan 'Deploy as Web App' di Apps Script untuk simpan permanen.")
+            st.write("### 📋 Ringkasan Scan")
+            st.dataframe(pd.DataFrame(final_list))
+            
+            # Tombol Download
+            zip_name = f"{m_code}_{tgl}.zip"
+            st.download_button("🖼️ Download Hasil Scan (ZIP)", zip_buffer.getvalue(), zip_name)
