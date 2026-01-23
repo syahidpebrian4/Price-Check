@@ -1,0 +1,9 @@
+streamlit
+easyocr
+opencv-python-headless
+numpy
+pandas
+pillow
+openpyxl
+fuzzywuzzy
+python-Levenshtein
