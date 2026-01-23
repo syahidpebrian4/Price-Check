@@ -25,11 +25,8 @@ TEXTS_TO_REDACT = [
     "AGUNG KURNIAWAN", "ARIF RAMADHAN", "HILMI ATIQ"
 ]
 
-st.set_page_config(page_title="Price Check V10.5 - Tesseract", layout="wide")
+st.set_page_config(page_title="Price Check V10.5 - Full Detail", layout="wide")
 
-# ==================================================
-# CORE OCR ENGINE (TESSERACT STABLE)
-# ==================================================
 def clean_and_repair_price(raw_segment):
     translation_table = {'O': '0', 'I': '1', 'L': '1', 'S': '5', 'B': '8', 'E': '8', 'G': '6', 'Z': '2', '+': '', 'A': '4'}
     text = re.sub(r'[\s.,\-]', '', str(raw_segment))
@@ -54,65 +51,54 @@ def extract_prices_smart(text_content):
         return {"normal": found_prices[0], "promo": found_prices[0]}
 
 def process_ocr_all_prices(pil_image):
-    # Pre-processing
     img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-    # Resize 1.5x untuk stabilitas Tesseract
     img_resized = cv2.resize(img_np, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
     gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
     
     # Get Data from Tesseract
     d = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT)
     
-    data = []
-    full_text_raw = ""
+    data_list = []
+    full_text_list = []
     for i in range(len(d['text'])):
         txt = d['text'][i].strip().upper()
         if txt:
-            data.append({
+            data_list.append({
                 "text": txt,
                 "top": d['top'][i],
                 "left": d['left'][i],
                 "width": d['width'][i],
                 "height": d['height'][i]
             })
-            full_text_raw += txt + " "
+            full_text_list.append(txt)
     
-    df_ocr = pd.DataFrame(data)
+    df_ocr = pd.DataFrame(data_list)
+    raw_full_text = " ".join(full_text_list)
     final_results = {"PCS": {"normal": 0, "promo": 0}, "CTN": {"normal": 0, "promo": 0}}
-    product_name_on_image = ""
+    product_name_on_image = "N/A"
 
     if not df_ocr.empty:
         df_ocr = df_ocr.sort_values(by='top').reset_index(drop=True)
-        
-        # Logika Nama Produk
         idx_search = df_ocr[df_ocr['text'].str.contains("CARI|KLIK|SEMUA", na=False)].index
         if not idx_search.empty and (idx_search[-1] + 1) < len(df_ocr):
             product_name_on_image = " ".join(df_ocr.iloc[idx_search[-1] + 1 : idx_search[-1] + 6]['text'].tolist())
 
-        # Logika Harga PCS
-        if any(x in full_text_raw for x in ["PCS", "SATUAN", "RCG", "BOX"]):
-            final_results["PCS"] = extract_prices_smart(full_text_raw)
-            
-        # Logika Harga CTN
-        if any(x in full_text_raw for x in ["CTN", "KARTON", "DUS"]):
-            final_results["CTN"] = extract_prices_smart(full_text_raw)
+        if any(x in raw_full_text for x in ["PCS", "SATUAN", "RCG", "BOX"]):
+            final_results["PCS"] = extract_prices_smart(raw_full_text)
+        if any(x in raw_full_text for x in ["CTN", "KARTON", "DUS"]):
+            final_results["CTN"] = extract_prices_smart(raw_full_text)
 
-    # --- Bagian Auto-Redact (Menggunakan Koordinat Tesseract) ---
+    # Redaksi
     draw = ImageDraw.Draw(pil_image)
     for i in range(len(d['text'])):
         word = d['text'][i].upper()
         if word:
             for keyword in TEXTS_TO_REDACT:
-                # Fuzzy simple check
                 if word in keyword.upper() and len(word) > 3:
-                    # Kembalikan koordinat ke skala asli (1.0 / 1.5)
-                    x = d['left'][i] / 1.5
-                    y = d['top'][i] / 1.5
-                    w = d['width'][i] / 1.5
-                    h = d['height'][i] / 1.5
+                    x, y, w, h = d['left'][i]/1.5, d['top'][i]/1.5, d['width'][i]/1.5, d['height'][i]/1.5
                     draw.rectangle([x-2, y-2, x+w+2, y+h+2], fill="white")
 
-    return final_results["PCS"], final_results["CTN"], product_name_on_image, pil_image
+    return final_results["PCS"], final_results["CTN"], product_name_on_image, raw_full_text, pil_image
 
 def compress_to_target(pil_img, target_kb):
     if pil_img.mode in ("RGBA", "P"): pil_img = pil_img.convert("RGB")
@@ -126,18 +112,12 @@ def compress_to_target(pil_img, target_kb):
     return buf.getvalue()
 
 # ================= UI STREAMLIT =================
-def norm(val):
-    return str(val).replace(".0", "").replace(" ", "").strip().upper()
+st.title("📸 Price Check (Full Scan Mode)")
 
-st.title("📸 Price Check V10.5 (Tesseract Stable)")
-
-col_input1, col_input2, col_input3 = st.columns(3)
-with col_input1:
-    m_code_input = st.text_input("📍 Master Code").strip().upper()
-with col_input2:
-    date_input = st.text_input("📅 Tanggal (23JAN2026)").strip().upper()
-with col_input3:
-    week_input = st.text_input("🗓️ Week").strip()
+col1, col2, col3 = st.columns(3)
+with col1: m_code_input = st.text_input("📍 Master Code").strip().upper()
+with col2: date_input = st.text_input("📅 Tanggal").strip().upper()
+with col3: week_input = st.text_input("🗓️ Week").strip()
 
 files = st.file_uploader("📂 Upload Foto", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
@@ -146,53 +126,57 @@ if files and m_code_input and date_input and week_input:
         xl = pd.ExcelFile(FILE_PATH)
         db_ig = xl.parse(SHEET_MASTER_IG)
         db_ig.columns = db_ig.columns.astype(str).str.strip()
-        
         db_targets = {s: xl.parse(s) for s in SHEETS_TARGET if s in xl.sheet_names}
-        for s in db_targets: db_targets[s].columns = db_targets[s].columns.astype(str).str.strip()
 
         final_list = []
         zip_buffer = io.BytesIO()
         
         with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED) as zip_file:
             for idx, f in enumerate(files):
-                with st.status(f"Memproses {f.name}...", expanded=False) as status:
+                with st.expander(f"🔍 Detail: {f.name}", expanded=True):
                     img_pil = Image.open(f)
-                    res_pcs, res_ctn, scanned_name, redacted_pil = process_ocr_all_prices(img_pil)
+                    res_pcs, res_ctn, scanned_name, raw_text, redacted_pil = process_ocr_all_prices(img_pil)
                     
+                    # Matching
                     found_prodcode, best_score = None, 0
                     for _, row in db_ig.iterrows():
                         db_name = str(row[COL_IG_NAME]).upper()
                         score = fuzz.token_set_ratio(db_name, scanned_name)
                         if score > 75 and score > best_score:
-                            best_score, found_prodcode = score, norm(row["PRODCODE"])
+                            best_score, found_prodcode = score, str(row["PRODCODE"])
                     
-                    if found_prodcode:
-                        target_sheet, target_idx = None, None
-                        for s_name, df_t in db_targets.items():
-                            match = df_t[(df_t["PRODCODE"].astype(str).apply(norm) == found_prodcode) & 
-                                         (df_t["MASTER Code"].astype(str).apply(norm) == norm(m_code_input))]
-                            if not match.empty:
-                                target_sheet, target_idx = s_name, match.index[0]
-                                break
+                    # Tampilan kolom kiri (Gambar) & kanan (Data)
+                    ca, cb = st.columns([1, 2])
+                    ca.image(redacted_pil, caption="Hasil Sensor")
+                    
+                    with cb:
+                        st.write(f"**Nama Terdeteksi:** `{scanned_name}`")
+                        st.write(f"**Match Code:** `{found_prodcode}` (Score: {best_score})")
+                        st.markdown("**Hasil Scan Mentah:**")
+                        st.caption(raw_text) # INI MENAMPILKAN SELURUH HASIL SCAN
                         
-                        if target_sheet:
-                            final_list.append({
-                                "prodcode": found_prodcode, "sheet": target_sheet, "index": target_idx,
-                                "n_pcs": res_pcs['normal'], "p_pcs": res_pcs['promo'],
-                                "n_ctn": res_ctn['normal'], "p_ctn": res_ctn['promo']
-                            })
-                            img_bytes = compress_to_target(redacted_pil, TARGET_IMAGE_SIZE_KB)
-                            zip_file.writestr(f"{found_prodcode}.jpg", img_bytes)
-                            status.update(label=f"✅ Match: {found_prodcode}", state="complete")
-                        else:
-                            st.warning(f"⚠️ {found_prodcode} tidak ditemukan di DF/HBHC (MC: {m_code_input})")
-                    else:
-                        st.error(f"❌ '{scanned_name}' tak cocok di IG.")
+                        st.json({"PCS": res_pcs, "CTN": res_ctn})
+
+                    if found_prodcode:
+                        # Logic simpan ke list & zip (sama seperti sebelumnya)
+                        for s_name, df_t in db_targets.items():
+                            df_t.columns = df_t.columns.astype(str).str.strip()
+                            match = df_t[(df_t["PRODCODE"].astype(str).str.contains(found_prodcode)) & 
+                                         (df_t["MASTER Code"].astype(str).str.contains(m_code_input))]
+                            if not match.empty:
+                                final_list.append({
+                                    "prodcode": found_prodcode, "sheet": s_name, "index": match.index[0],
+                                    "n_pcs": res_pcs['normal'], "p_pcs": res_pcs['promo'],
+                                    "n_ctn": res_ctn['normal'], "p_ctn": res_ctn['promo']
+                                })
+                                img_bytes = compress_to_target(redacted_pil, TARGET_IMAGE_SIZE_KB)
+                                zip_file.writestr(f"{found_prodcode}.jpg", img_bytes)
+                                break
                 gc.collect()
 
         if final_list:
-            st.write("### 📋 Ringkasan")
-            st.table(pd.DataFrame(final_list)[["prodcode", "sheet", "n_pcs", "p_pcs", "n_ctn", "p_ctn"]])
+            st.write("### 📋 Ringkasan Update")
+            st.dataframe(pd.DataFrame(final_list))
             
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -202,15 +186,9 @@ if files and m_code_input and date_input and week_input:
                         ws = wb[r['sheet']]
                         headers = [str(c.value).strip() for c in ws[1]]
                         row_num = r['index'] + 2
-                        mapping = {
-                            "Normal Competitor Price (Pcs)": r['n_pcs'],
-                            "Promo Competitor Price (Pcs)": r['p_pcs'],
-                            "Normal Competitor Price (Ctn)": r['n_ctn'],
-                            "Promo Competitor Price (Ctn)": r['p_ctn']
-                        }
+                        mapping = {"Normal Competitor Price (Pcs)": r['n_pcs'], "Promo Competitor Price (Pcs)": r['p_pcs'], "Normal Competitor Price (Ctn)": r['n_ctn'], "Promo Competitor Price (Ctn)": r['p_ctn']}
                         for col_name, val in mapping.items():
-                            if col_name in headers:
-                                ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
+                            if col_name in headers: ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
                     wb.save(FILE_PATH)
                     st.success("Database Updated!")
             
