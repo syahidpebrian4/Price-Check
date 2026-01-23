@@ -4,8 +4,6 @@ opencv-python-headless
 numpy
 pandas
 Pillow
-openpyxl
 fuzzywuzzy
 python-Levenshtein
 st-gsheets-connection
-xlsxwriter
