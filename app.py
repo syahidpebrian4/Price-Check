@@ -10,7 +10,7 @@ import zipfile
 from fuzzywuzzy import fuzz
 
 # ================= CONFIG (LINK DATABASE) =================
-URL_BASE = "https://docs.google.com/spreadsheets/d/1vz2tEQ7YbFuKSF172ihDFBh6YE3F4Ql1jSEOpptZN34"
+URL_BASE = "https://docs.google.com/spreadsheets/d/1HF9TVlYok1Virca7Mc_LsUdGbpgCIJoqHLQET5Knc5M/edit?usp=sharing"
 SHEETS_TARGET = ["DF", "HBHC"]
 SHEET_MASTER_IG = "IG" 
 COL_IG_NAME = "PRODNAME_IG" 
@@ -137,3 +137,4 @@ if files and m_code:
             # Tombol Download
             zip_name = f"{m_code}_{tgl}.zip"
             st.download_button("🖼️ Download Hasil Scan (ZIP)", zip_buffer.getvalue(), zip_name)
+
