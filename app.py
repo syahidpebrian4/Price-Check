@@ -91,7 +91,7 @@ def process_ocr_final(pil_image):
     if re.search(pcs_pattern, full_text_single):
         after_unit = re.split(pcs_pattern, full_text_single)[1]
         # Berhenti di simbol "/" atau kata "ISI"
-        m = re.search(r"(PCS|RCG|BOX)(.*?)[\/|ISI]", after_unit)
+        m = re.search(r"(PCS|RCG|BOX)(.*?)[\/|ISI|BS]", after_unit)
         if m:
             p = re.findall(r"RP\s*([\d\-\.,%]+)", m.group(2))
             if len(p) >= 2: res["PCS"]["n"], res["PCS"]["p"] = clean_price_val(p[0]), clean_price_val(p[1])
@@ -218,3 +218,4 @@ if files and m_code and date_inp and week_inp:
             st.download_button("🖼️ DOWNLOAD ZIP FOTO", zip_buffer.getvalue(), f"Photos_{m_code}.zip")
     else:
         st.error(f"Database Excel tidak ditemukan di: {FILE_PATH}")
+
