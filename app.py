@@ -49,26 +49,32 @@ TEXTS_TO_REDACT = [
     "AGUNG KURNIAWAN", "ARIF RAMADHAN", "HILMI ATIQ"
 ]
 
-st.set_page_config(page_title="Price Check V11.8", layout="wide")
+st.set_page_config(page_title="Price Check V11.9 - Strikethrough Fix", layout="wide")
 
-def extract_prices_logic_v2(segment):
+def extract_prices_final_fixed(segment):
     """
-    Logika:
-    1. Ambil teks antara RP dan / ISI
-    2. Jika ada 2 angka: Angka 1 = NORMAL, Angka 2 = PROMO
-    3. Jika ada 1 angka: PROMO = NORMAL = Angka 1
+    Logika Perbaikan:
+    - Menghapus titik, koma, dan strip (-) agar '19-609' menjadi '19609'
+    - Mencari angka dengan digit 4-7
     """
-    # Bersihkan segment hanya sampai '/ ISI'
-    clean_seg = segment.split("/ ISI")[0]
-    # Ambil semua angka 3-7 digit, hapus titik/koma
-    nums = re.findall(r'\d{3,7}', clean_seg.replace('.', '').replace(',', ''))
+    # Bersihkan area sebelum '/ ISI'
+    target_text = segment.split("/ ISI")[0]
+    
+    # Hapus semua pemisah yang merusak (titik, koma, strip)
+    target_text = re.sub(r'[.,\-]', '', target_text)
+    
+    # Ambil semua kumpulan angka
+    nums = re.findall(r'\d{4,7}', target_text)
     
     if len(nums) >= 2:
+        # Harga 1 = Normal (biasanya harga coret yang di depan)
+        # Harga 2 = Promo (harga terbaru)
         return {"normal": int(nums[0]), "promo": int(nums[1])}
     elif len(nums) == 1:
         val = int(nums[0])
-        return {"promo": val, "normal": val}
-    return {"promo": 0, "normal": 0}
+        return {"normal": val, "promo": val}
+    
+    return {"normal": 0, "promo": 0}
 
 def process_ocr_indogrosir(pil_image):
     img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
@@ -76,6 +82,7 @@ def process_ocr_indogrosir(pil_image):
     img_resized = cv2.resize(img_np, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
     
+    # OCR
     d = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT, config=r'--oem 3 --psm 6')
     df_ocr = pd.DataFrame(d)
     df_ocr['text'] = df_ocr['text'].fillna('').str.upper()
@@ -87,7 +94,7 @@ def process_ocr_indogrosir(pil_image):
     final_res = {"PCS": {"normal": 0, "promo": 0}, "CTN": {"normal": 0, "promo": 0}}
     prod_name = "N/A"
 
-    # --- DETEKSI NAMA PRODUK ---
+    # --- 1. DETEKSI NAMA PRODUK ---
     best_match_score = 0
     for master_name in PRODUCT_MASTER_LIST:
         score = fuzz.partial_ratio(master_name.upper(), full_text_raw)
@@ -95,16 +102,18 @@ def process_ocr_indogrosir(pil_image):
             best_match_score = score
             prod_name = master_name
 
-    # --- DETEKSI HARGA PCS & CTN ---
+    # --- 2. DETEKSI HARGA PCS & CTN (FIXED REGEX) ---
+    # Mencari teks dari 'PCS -' sampai '/ ISI'
     pcs_section = re.search(r"PCS\s*-\s*(.*?)/ ISI", full_text_raw)
     if pcs_section:
-        final_res["PCS"] = extract_prices_logic_v2(pcs_section.group(1))
+        final_res["PCS"] = extract_prices_final_fixed(pcs_section.group(1))
 
+    # Mencari teks dari 'CTN -' sampai '/ ISI'
     ctn_section = re.search(r"CTN\s*-\s*(.*?)/ ISI", full_text_raw)
     if ctn_section:
-        final_res["CTN"] = extract_prices_logic_v2(ctn_section.group(1))
+        final_res["CTN"] = extract_prices_final_fixed(ctn_section.group(1))
 
-    # --- LOGIKA REDAKSI ---
+    # --- 3. LOGIKA REDAKSI ---
     draw = ImageDraw.Draw(pil_image)
     for _, row in lines_df.iterrows():
         line_txt = str(row['text']).upper()
@@ -117,18 +126,18 @@ def process_ocr_indogrosir(pil_image):
 
     return final_res["PCS"], final_res["CTN"], prod_name, full_text_raw, pil_image
 
-# ================= UI STREAMLIT =================
+# ================= UI STREAMLIT (Sama seperti V11.8) =================
 def norm(val):
     return str(val).replace(".0", "").replace(" ", "").strip().upper()
 
-st.title("📸 Price Check V11.8 - Fix Price Sequence")
+st.title("📸 Price Check V11.9 - Fix Strikethrough")
 
 c1, c2, c3 = st.columns(3)
 with c1: m_code = st.text_input("📍 Master Code").upper()
-with c2: date_inp = st.text_input("📅 Tanggal (CONTOH: 26JAN2026)").upper()
+with c2: date_inp = st.text_input("📅 Tanggal (26JAN2026)").upper()
 with c3: week_inp = st.text_input("🗓️ Week")
 
-files = st.file_uploader("📂 Upload Screenshots", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+files = st.file_uploader("📂 Upload Screenshot", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
 if files and m_code and date_inp and week_inp:
     if os.path.exists(FILE_PATH):
@@ -141,7 +150,7 @@ if files and m_code and date_inp and week_inp:
         
         with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED) as zf:
             for f in files:
-                with st.expander(f"🔍 Proses: {f.name}", expanded=True):
+                with st.expander(f"🔍 Scan: {f.name}", expanded=True):
                     img_pil = Image.open(f)
                     pcs, ctn, name, raw, red_img = process_ocr_indogrosir(img_pil)
                     
@@ -155,11 +164,15 @@ if files and m_code and date_inp and week_inp:
                     col_img, col_info = st.columns([1, 1.2])
                     with col_img: st.image(red_img)
                     with col_info:
-                        st.write(f"**Nama Produk:** `{name}`")
-                        st.write(f"**Match Prodcode:** `{match_code}`")
-                        st.info(f"PCS: Normal Rp {pcs['normal']:,} | Promo Rp {pcs['promo']:,}")
-                        st.success(f"CTN: Normal Rp {ctn['normal']:,} | Promo Rp {ctn['promo']:,}")
-                        st.text_area("OCR Raw Preview", value=raw, height=70)
+                        st.subheader(f"Produk: {name}")
+                        st.write(f"Prodcode: `{match_code}` (Score: {best_score})")
+                        st.write("---")
+                        c_pcs, c_ctn = st.columns(2)
+                        c_pcs.metric("PCS Normal", f"Rp {pcs['normal']:,}")
+                        c_pcs.metric("PCS Promo", f"Rp {pcs['promo']:,}")
+                        c_ctn.metric("CTN Normal", f"Rp {ctn['normal']:,}")
+                        c_ctn.metric("CTN Promo", f"Rp {ctn['promo']:,}")
+                        st.text_area("OCR Raw Output", value=raw, height=70)
 
                     if match_code:
                         for s_name, df_t in db_targets.items():
@@ -197,6 +210,6 @@ if files and m_code and date_inp and week_inp:
                 wb.save(FILE_PATH)
                 st.success("Database excel Berhasil Diupdate!")
                 with open(FILE_PATH, "rb") as f:
-                    st.download_button("📥 DOWNLOAD EXCEL", f, f"Update_{date_inp}.xlsx")
+                    st.download_button("📥 DOWNLOAD EXCEL", f, f"Final_Report_{date_inp}.xlsx")
             
             st.download_button("🖼️ DOWNLOAD ZIP FOTO", zip_buffer.getvalue(), f"{m_code}_{date_inp}.zip")
