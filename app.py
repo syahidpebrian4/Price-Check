@@ -19,75 +19,78 @@ SHEET_MASTER_IG = "IG"
 COL_IG_NAME = "PRODNAME_IG" 
 TARGET_IMAGE_SIZE_KB = 195 
 
-st.set_page_config(page_title="Price Check V10.6 - Klik Indogrosir", layout="wide")
+st.set_page_config(page_title="Price Check V10.7", layout="wide")
 
 def clean_price_strict(text_segment):
-    """Membersihkan teks dan mengambil angka pertama yang ditemukan (3-7 digit)"""
-    # Hapus titik/koma pemisah ribuan
-    text = text_segment.replace('.', '').replace(',', '')
-    # Ambil angka pertama yang muncul
-    nums = re.findall(r'\d{3,7}', text)
-    return int(nums[0]) if nums else 0
+    """Mengambil angka saja dari string harga (misal: 16.100 -> 16100)"""
+    text = re.sub(r'[^\d]', '', str(text_segment))
+    return int(text) if text else 0
 
 def process_ocr_indogrosir(pil_image):
+    # 1. Persiapan Gambar untuk OCR
     img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-    # Resize 1.5x agar teks angka kecil lebih terbaca
-    img_resized = cv2.resize(img_np, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
+    # Gunakan skala 2.0x agar teks kecil Klik Indogrosir lebih tajam
+    scale = 2.0
+    img_resized = cv2.resize(img_np, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
     
-    # OCR dengan mode Page Segmentation 6 (Assume a single uniform block of text)
+    # 2. Jalankan Tesseract
     custom_config = r'--oem 3 --psm 6'
     d = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT, config=custom_config)
     
     df_ocr = pd.DataFrame(d)
     df_ocr['text'] = df_ocr['text'].fillna('').str.upper()
-    
-    # Gabungkan teks menjadi satu string besar untuk pencarian pola
     full_text_raw = " ".join(df_ocr['text'].tolist())
     
     final_res = {"PCS": {"normal": 0, "promo": 0}, "CTN": {"normal": 0, "promo": 0}}
     prod_name = "N/A"
 
-    # --- 1. LOGIKA NAMA PRODUK ---
-    # Cari Nama Produk setelah kata 'CARI DI KLIK INDOGROSIR Q'
-    if "INDOGROSIR Q" in full_text_raw:
-        parts = full_text_raw.split("INDOGROSIR Q")
-        if len(parts) > 1:
-            # Ambil 6 kata pertama setelah box search
-            prod_name = " ".join(parts[1].strip().split()[:6])
-
-    # --- 2. LOGIKA HARGA PCS ---
-    # Cari setelah: PILIH SATUAN JUAL ® PCS -
+    # --- LOGIKA EKSTRAKSI HARGA (SESUAI PERMINTAAN) ---
+    
+    # Harga PCS: Angka pertama setelah 'PCS - RP'
     match_pcs = re.search(r"PCS\s*-\s*RP\s*([\d\.,]+)", full_text_raw)
     if match_pcs:
         price = clean_price_strict(match_pcs.group(1))
         final_res["PCS"] = {"normal": price, "promo": price}
 
-    # --- 3. LOGIKA HARGA CTN ---
-    # Cari setelah: CTN -
+    # Harga CTN: Angka pertama setelah 'CTN - RP'
     match_ctn = re.search(r"CTN\s*-\s*RP\s*([\d\.,]+)", full_text_raw)
     if match_ctn:
         price = clean_price_strict(match_ctn.group(1))
         final_res["CTN"] = {"normal": price, "promo": price}
 
-    # --- 4. LOGIKA REDAKSI (SENSOR) ---
+    # Nama Produk: 6 kata setelah 'INDOGROSIR Q'
+    if "INDOGROSIR Q" in full_text_raw:
+        parts = full_text_raw.split("INDOGROSIR Q")
+        if len(parts) > 1:
+            prod_name = " ".join(parts[1].strip().split()[:6])
+
+    # --- LOGIKA REDAKSI (SENSOR) ---
+    # Kita cari baris yang mengandung 'CARI DI KLIK' atau 'HALO'
     draw = ImageDraw.Draw(pil_image)
-    # Cari index teks 'INDOGROSIR' dan 'Q'
-    header_idx = df_ocr[df_ocr['text'].str.contains("INDOGROSIR|HALO", na=False)].index
-    if not header_idx.empty:
-        # Tentukan koordinat Y baris tersebut
-        target_y = df_ocr.loc[header_idx[0], 'top'] / 1.5
-        # Redaksi satu baris penuh di area tersebut (lebar gambar)
-        draw.rectangle([0, target_y - 5, pil_image.width, target_y + 40], fill="white")
+    header_keywords = df_ocr[df_ocr['text'].str.contains("CARI|KLIK|INDOGROSIR|HALO", na=False)]
+    
+    if not header_keywords.empty:
+        # Ambil koordinat Y dari kata kunci tersebut, kembalikan ke skala asli
+        # Biasanya nama user ada tepat di baris yang sama atau tepat di bawah baris ini
+        y_coord = header_keywords['top'].iloc[0] / scale
+        h_box = header_keywords['height'].iloc[0] / scale
+        
+        # Gambar kotak sensor menutupi satu baris kalimat tersebut
+        # Kita beri padding sedikit (y-10 sampai y+h+10) agar bersih
+        draw.rectangle([0, y_coord - 10, pil_image.width, y_coord + h_box + 15], fill="white")
 
     return final_res["PCS"], final_res["CTN"], prod_name, full_text_raw, pil_image
 
-# ================= UI & DOWNLOAD LOGIC =================
-st.title("📸 Price Check (Indogrosir Special)")
+# ================= UI STREAMLIT =================
+def norm(val):
+    return str(val).replace(".0", "").replace(" ", "").strip().upper()
+
+st.title("📸 Price Check V10.7 (Full Fixed)")
 
 c1, c2, c3 = st.columns(3)
 with c1: m_code = st.text_input("📍 Master Code").upper()
-with c2: date_inp = st.text_input("📅 Tanggal").upper()
+with c2: date_inp = st.text_input("📅 Tanggal (CONTOH: 23JAN2026)").upper()
 with c3: week_inp = st.text_input("🗓️ Week")
 
 files = st.file_uploader("📂 Upload Screenshots", type=["jpg","png","jpeg"], accept_multiple_files=True)
@@ -104,57 +107,71 @@ if files and m_code and date_inp and week_inp:
         
         with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED) as zf:
             for f in files:
-                with st.expander(f"🔍 Detail: {f.name}", expanded=True):
+                with st.expander(f"🔍 Processing: {f.name}", expanded=True):
                     img_pil = Image.open(f)
-                    pcs, ctn, name, raw, red_img = process_ocr_indogrosir(img_pil)
+                    pcs, ctn, name, raw_txt, red_img = process_ocr_indogrosir(img_pil)
                     
-                    # Matching
+                    # Fuzzy Matching Nama ke Database
                     match_code, best_score = None, 0
                     for _, row in db_ig.iterrows():
                         db_name = str(row[COL_IG_NAME]).upper()
                         score = fuzz.token_set_ratio(db_name, name)
                         if score > 70 and score > best_score:
-                            best_score, match_code = score, str(row["PRODCODE"])
+                            best_score, match_code = score, norm(row["PRODCODE"])
                     
-                    col_a, col_b = st.columns([1, 2])
-                    col_a.image(red_img)
-                    with col_b:
+                    # Display Result
+                    col_left, col_right = st.columns([1, 2])
+                    col_left.image(red_img, caption="Hasil Sensor")
+                    with col_right:
                         st.write(f"**Nama Terdeteksi:** `{name}`")
-                        st.write(f"**Match Code:** `{match_code}`")
+                        st.write(f"**Prodcode Match:** `{match_code}` (Score: {best_score})")
                         st.json({"PCS": pcs, "CTN": ctn})
-                        st.caption(f"Raw: {raw[:300]}...")
+                        st.caption(f"Raw Text Preview: {raw_txt[:200]}...")
 
                     if match_code:
                         for s_name, df_t in db_targets.items():
                             df_t.columns = df_t.columns.astype(str).str.strip()
-                            match = df_t[(df_t["PRODCODE"].astype(str).str.contains(match_code)) & 
-                                         (df_t["MASTER Code"].astype(str).str.contains(m_code))]
+                            # Cari baris di DF/HBHC yang prodcode dan Master Code-nya sesuai
+                            match = df_t[(df_t["PRODCODE"].astype(str).apply(norm) == match_code) & 
+                                         (df_t["MASTER Code"].astype(str).apply(norm) == norm(m_code))]
+                            
                             if not match.empty:
                                 final_list.append({
                                     "prodcode": match_code, "sheet": s_name, "index": match.index[0],
                                     "n_pcs": pcs['normal'], "p_pcs": pcs['promo'],
                                     "n_ctn": ctn['normal'], "p_ctn": ctn['promo']
                                 })
-                                img_bytes = io.BytesIO()
-                                red_img.save(img_bytes, format="JPEG", quality=80)
-                                zf.writestr(f"{match_code}.jpg", img_bytes.getvalue())
+                                
+                                # Konversi ke RGB untuk menghindari OSError JPEG
+                                if red_img.mode in ("RGBA", "P"):
+                                    red_img = red_img.convert("RGB")
+                                
+                                img_io = io.BytesIO()
+                                red_img.save(img_io, format="JPEG", quality=85)
+                                zf.writestr(f"{match_code}.jpg", img_io.getvalue())
                                 break
                 gc.collect()
 
         if final_list:
-            st.write("### 📋 Tabel Update")
-            st.dataframe(pd.DataFrame(final_list))
+            st.write("### 📋 Ringkasan Data Update")
+            st.table(pd.DataFrame(final_list)[["prodcode", "sheet", "n_pcs", "p_pcs", "n_ctn", "p_ctn"]])
             
-            if st.button("🚀 UPDATE EXCEL"):
+            if st.button("🚀 EKSEKUSI UPDATE EXCEL"):
                 wb = load_workbook(FILE_PATH)
                 for r in final_list:
                     ws = wb[r['sheet']]
                     headers = [str(c.value).strip() for c in ws[1]]
                     row_num = r['index'] + 2
-                    mapping = {"Normal Competitor Price (Pcs)": r['n_pcs'], "Promo Competitor Price (Pcs)": r['p_pcs'], "Normal Competitor Price (Ctn)": r['n_ctn'], "Promo Competitor Price (Ctn)": r['p_ctn']}
+                    mapping = {
+                        "Normal Competitor Price (Pcs)": r['n_pcs'],
+                        "Promo Competitor Price (Pcs)": r['p_pcs'],
+                        "Normal Competitor Price (Ctn)": r['n_ctn'],
+                        "Promo Competitor Price (Ctn)": r['p_ctn']
+                    }
                     for col_name, val in mapping.items():
-                        if col_name in headers: ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
+                        if col_name in headers:
+                            ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
                 wb.save(FILE_PATH)
-                st.success("Excel Updated!")
-                
-            st.download_button("📥 ZIP", zip_buffer.getvalue(), f"{m_code}_{date_inp}.zip")
+                st.success("Database Excel Berhasil Diperbarui!")
+            
+            st.download_button("📥 DOWNLOAD ZIP FOTO", zip_buffer.getvalue(), f"{m_code}_{date_inp}.zip")
