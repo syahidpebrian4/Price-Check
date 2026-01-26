@@ -12,125 +12,123 @@ import zipfile
 from fuzzywuzzy import fuzz
 import gc
 
-# ================= CONFIG & DATABASE =================
+# ================= CONFIG =================
 FILE_PATH = "database/master_harga.xlsx"
 SHEETS_TARGET = ["DF", "HBHC"]
 SHEET_MASTER_IG = "IG" 
 COL_IG_NAME = "PRODNAME_IG" 
 
-# Redaksi data sensitif
-TEXTS_TO_REDACT = [
-    "HALO, AL YUYUN SUMARNI", "AL YUYUN SUMARNI", "MEMBER UMUM KLIK", 
-    "088902864826", "02121584272", "CS.KLIK@INDOGROSIR.CO.ID"
-]
+# Daftar kata yang harus disensor (Hanya area profil/atas)
+TEXTS_TO_REDACT = ["AL YUYUN SUMARNI", "HALO", "MEMBER UMUM", "088902864826", "02121584272", "CS.KLIK@INDOGROSIR.CO.ID"]
 
-st.set_page_config(page_title="PRICE CHECK V12.8", layout="wide")
+st.set_page_config(page_title="PRICE CHECK V12.9", layout="wide")
 
 def clean_price_val(raw_str):
-    """Membuang semua karakter kecuali angka agar kebal terhadap simbol sampah OCR"""
+    """Membersihkan segala karakter non-angka"""
     if not raw_str: return 0
-    clean = re.sub(r'[^\d]', '', raw_str)
-    try:
-        return int(clean)
-    except:
-        return 0
+    clean = re.sub(r'[^\d]', '', str(raw_str))
+    return int(clean) if clean else 0
 
-def process_ocr_v12_8(pil_image):
+def process_ocr_v12_9(pil_image):
     # 1. Preprocessing
     img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-    scale = 2.5 # Menaikkan skala sedikit untuk membantu pembacaan teks kecil
+    scale = 2.0
     img_resized = cv2.resize(img_np, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
     
-    # 2. OCR Execution
+    # 2. OCR Data Extraction
     d = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT, config=r'--oem 3 --psm 6')
     df = pd.DataFrame(d)
     df = df[df['text'].str.strip() != ""]
     df['text'] = df['text'].str.upper()
 
-    # 3. Spatial Grouping (Top-Down & Left-Right Sorting)
+    # 3. Baris demi Baris (Line Grouping)
     df = df.sort_values(by=['top', 'left'])
     lines = []
     if not df.empty:
-        current_line_top = df.iloc[0]['top']
-        temp_words = []
+        current_top = df.iloc[0]['top']
+        temp_line = []
         for _, row in df.iterrows():
-            if row['top'] - current_line_top > 20: # Toleransi baris
-                temp_words.sort(key=lambda x: x['left'])
-                lines.append(" ".join([w['text'] for w in temp_words]))
-                temp_words = [{'text': row['text'], 'left': row['left']}]
-                current_line_top = row['top']
+            if row['top'] - current_top > 15:
+                temp_line.sort(key=lambda x: x['left'])
+                lines.append(" ".join([w['text'] for w in temp_line]))
+                temp_line = [{'text': row['text'], 'left': row['left']}]
+                current_top = row['top']
             else:
-                temp_words.append({'text': row['text'], 'left': row['left']})
-        temp_words.sort(key=lambda x: x['left'])
-        lines.append(" ".join([w['text'] for w in temp_words]))
-    
-    clean_full_text = "\n".join(lines)
-    single_line_text = " ".join(lines)
+                temp_line.append({'text': row['text'], 'left': row['left']})
+        temp_line.sort(key=lambda x: x['left'])
+        lines.append(" ".join([w['text'] for w in temp_line]))
 
-    # 4. Deteksi Nama Produk Secara Dinamis
-    # Mencari teks sebelum kata 'POTONGAN' atau setelah navigasi kategori
+    full_text_clean = "\n".join(lines)
+    single_line = " ".join(lines)
+
+    # 4. Nama Produk (Mencari baris dengan pola kode dalam kurung: (39007))
     prod_name = "N/A"
-    # Pola: ambil baris yang mengandung (nomor kode) dan nama sebelum label 'POTONGAN'
-    name_search = re.search(r"(.*?)\n\s*POTONGAN", clean_full_text, re.DOTALL)
-    if name_search:
-        # Mengambil baris terakhir dari hasil capture sebelum kata POTONGAN
-        lines_before = name_search.group(1).strip().split('\n')
-        prod_name = lines_before[-1].strip()
-    
-    # 5. Ekstraksi Harga (PCS & CTN)
-    final_res = {"PCS": {"normal": 0, "promo": 0}, "CTN": {"normal": 0, "promo": 0}}
-    
-    # Pattern PCS/RCG/BOX
-    unit_m = re.search(r"(PCS|RCG|BOX).*?RP\s*([\d\-\.,%]+).*?RP\s*([\d\-\.,%]+).*?/\s*ISI", single_line_text)
-    if unit_m:
-        final_res["PCS"]["normal"] = clean_price_val(unit_m.group(2))
-        final_res["PCS"]["promo"] = clean_price_val(unit_m.group(3))
+    for line in lines:
+        if re.search(r"\(\d{4,7}\)", line):
+            prod_name = line.strip()
+            break
 
-    # Pattern CTN (Ditingkatkan untuk menangkap angka di tengah simbol sampah seperti RPT%.000)
-    ctn_m = re.search(r"CTN.*?RP?\s*([\d\-\.,%]+).*?RP\s*([\d\-\.,%]+).*?/\s*ISI", single_line_text)
-    if ctn_m:
-        final_res["CTN"]["normal"] = clean_price_val(ctn_m.group(1))
-        final_res["CTN"]["promo"] = clean_price_val(ctn_m.group(2))
+    # 5. Ekstraksi Harga (Per Baris agar tidak tertukar)
+    res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
+    for line in lines:
+        # Deteksi Baris Eceran
+        if any(x in line for x in ["PCS", "RCG", "BOX"]) and "/ ISI" in line:
+            prices = re.findall(r"RP\s*([\d\-\.,%]+)", line)
+            if len(prices) >= 2:
+                res["PCS"]["n"], res["PCS"]["p"] = clean_price_val(prices[0]), clean_price_val(prices[1])
+            elif len(prices) == 1:
+                res["PCS"]["n"] = res["PCS"]["p"] = clean_price_val(prices[0])
+        
+        # Deteksi Baris Karton
+        if "CTN" in line and "/ ISI" in line:
+            # Mencari angka setelah 'RP' atau angka murni jika 'RP' tidak terbaca sempurna
+            prices = re.findall(r"(?:RP\s*)?([\d\-\.,%]+)", line)
+            # Filter hanya yang panjang angkanya masuk akal untuk harga karton (>3 digit)
+            valid_prices = [p for p in prices if len(re.sub(r'[^\d]', '', p)) > 3]
+            if len(valid_prices) >= 2:
+                res["CTN"]["n"], res["CTN"]["p"] = clean_price_val(valid_prices[0]), clean_price_val(valid_prices[1])
+            elif len(valid_prices) == 1:
+                res["CTN"]["n"] = res["CTN"]["p"] = clean_price_val(valid_prices[0])
 
-    # 6. Logika Promosi Khusus (Antara Keyword dan RAP)
-    promo_desc = "-"
+    # 6. Logika Promosi (Keyword -> | -> RAP)
+    promo_txt = "-"
     keyword = "MAU LEBIH UNTUNG? CEK MEKANISME PROMO BERIKUT"
-    if keyword in single_line_text:
-        after_keyword = single_line_text.split(keyword)[-1]
-        # Mengambil teks di antara tanda pipa pertama dan tanda pipa sebelum RAP
-        promo_match = re.search(r"[\|I1l]\s*(.*?)\s*[\|I1l]\s*RAP", after_keyword, re.DOTALL)
-        if promo_match:
-            promo_desc = promo_match.group(1).strip()
-            promo_desc = re.sub(r'^[^A-Z0-9]+', '', promo_desc) # Bersihkan sampah awal
-        else:
-            # Fallback jika pipa tidak lengkap
-            promo_match_alt = re.search(r"[\|I1l]\s*(.*?RAP)", after_keyword, re.DOTALL)
-            if promo_match_alt:
-                promo_desc = promo_match_alt.group(1).replace("RAP", "").strip()
+    if keyword in single_line:
+        try:
+            part = single_line.split(keyword)[1]
+            # Mencari teks di antara pipa pertama dan kata RAP
+            m = re.search(r"[\|I1l]\s*(.*?)\s*[\|I1l]?\s*RAP", part, re.DOTALL)
+            if m:
+                promo_txt = m.group(1).strip()
+                promo_txt = re.sub(r'^[^A-Z0-9]+', '', promo_txt)
+        except:
+            pass
 
-    # 7. Redaksi / Sensor
+    # 7. Redact (Hanya sensor 25% area atas gambar)
     draw = ImageDraw.Draw(pil_image)
+    limit_y = (img_resized.shape[0] * 0.25) # Batas sensor hanya di 25% atas
     for _, row in df.iterrows():
-        for kw in TEXTS_TO_REDACT:
-            if fuzz.partial_ratio(kw, row['text']) > 80:
-                x, y, w, h = row['left']/scale, row['top']/scale, row['width']/scale, row['height']/scale
-                draw.rectangle([x-2, y-2, x+w+2, y+h+2], fill="white")
-    
-    return final_res["PCS"], final_res["CTN"], prod_name, clean_full_text, pil_image, promo_desc
+        if row['top'] < limit_y:
+            for kw in TEXTS_TO_REDACT:
+                if kw in row['text'] or fuzz.ratio(kw, row['text']) > 80:
+                    x, y, w, h = row['left']/scale, row['top']/scale, row['width']/scale, row['height']/scale
+                    draw.rectangle([x-2, y-2, x+w+2, y+h+2], fill="white")
+
+    return res["PCS"], res["CTN"], prod_name, full_text_clean, pil_image, promo_txt
 
 # ================= UI STREAMLIT =================
 def norm(val):
     return str(val).replace(".0", "").replace(" ", "").strip().upper()
 
-st.title("PRICE CHECK - V12.8")
+st.title("PRICE CHECK - V12.9 STABLE")
 
 c1, c2, c3 = st.columns(3)
 with c1: m_code = st.text_input("📍 MASTER CODE").upper()
-with c2: date_inp = st.text_input("📅 TANGGAL (Ex: 26 JAN)").upper()
+with c2: date_inp = st.text_input("📅 TANGGAL").upper()
 with c3: week_inp = st.text_input("🗓️ WEEK")
 
-files = st.file_uploader("📂 UPLOAD SCREENSHOTS", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+files = st.file_uploader("📂 UPLOAD FOTO", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
 if files and m_code and date_inp and week_inp:
     if os.path.exists(FILE_PATH):
@@ -143,30 +141,30 @@ if files and m_code and date_inp and week_inp:
             for f in files:
                 with st.container(border=True):
                     img_pil = Image.open(f)
-                    pcs, ctn, name, raw_text, red_img, p_desc = process_ocr_v12_8(img_pil)
+                    pcs, ctn, name, raw_text, red_img, p_desc = process_ocr_v12_9(img_pil)
                     
-                    # Fuzzy match untuk prodcode (karena nama produk sekarang sangat panjang)
+                    # Fuzzy match untuk prodcode
                     match_code, best_score = None, 0
                     for _, row in db_ig.iterrows():
                         db_n = str(row[COL_IG_NAME]).upper()
                         score = fuzz.partial_ratio(db_n, name)
-                        if score > 75 and score > best_score:
+                        if score > 70 and score > best_score:
                             best_score, match_code = score, norm(row["PRODCODE"])
                     
-                    st.subheader(f"📄 File: {f.name}")
+                    st.subheader(f"🔍 {f.name}")
                     col_img, col_info = st.columns([1, 1.2])
                     with col_img: st.image(red_img)
                     with col_info:
                         st.markdown(f"### {name}")
-                        st.write(f"Match Prodcode: `{match_code}` (Score: {best_score})")
+                        st.write(f"Match Code: `{match_code}`")
                         st.info(f"**PROMOSI:** {p_desc}")
                         m1, m2 = st.columns(2)
-                        m1.metric("UNIT Normal", f"Rp {pcs['normal']:,}")
-                        m1.metric("UNIT Promo", f"Rp {pcs['promo']:,}")
-                        m2.metric("CTN Normal", f"Rp {ctn['normal']:,}")
-                        m2.metric("CTN Promo", f"Rp {ctn['promo']:,}")
+                        m1.metric("UNIT Normal", f"Rp {pcs['n']:,}")
+                        m1.metric("UNIT Promo", f"Rp {pcs['p']:,}")
+                        m2.metric("CTN Normal", f"Rp {ctn['n']:,}")
+                        m2.metric("CTN Promo", f"Rp {ctn['p']:,}")
 
-                    with st.expander("📄 LIHAT DATA MENTAH SCAN (RE-STRUCTURED)"):
+                    with st.expander("📄 RAW TEXT"):
                         st.text(raw_text)
 
                     if match_code:
@@ -174,13 +172,11 @@ if files and m_code and date_inp and week_inp:
                             df_t.columns = df_t.columns.astype(str).str.strip()
                             match_row = df_t[(df_t["PRODCODE"].astype(str).apply(norm) == match_code) & 
                                              (df_t["MASTER Code"].astype(str).apply(norm) == norm(m_code))]
-                            
                             if not match_row.empty:
                                 final_list.append({
                                     "prodcode": match_code, "sheet": s_name, "index": match_row.index[0],
-                                    "n_pcs": pcs['normal'], "p_pcs": pcs['promo'],
-                                    "n_ctn": ctn['normal'], "p_ctn": ctn['promo'],
-                                    "p_desc": p_desc
+                                    "n_pcs": pcs['n'], "p_pcs": pcs['p'],
+                                    "n_ctn": ctn['n'], "p_ctn": ctn['p'], "p_desc": p_desc
                                 })
                                 buf = io.BytesIO()
                                 red_img.convert("RGB").save(buf, format="JPEG")
@@ -190,7 +186,7 @@ if files and m_code and date_inp and week_inp:
 
         if final_list:
             st.divider()
-            if st.button("🚀 EKSEKUSI UPDATE KE EXCEL"):
+            if st.button("🚀 UPDATE DATABASE EXCEL"):
                 wb = load_workbook(FILE_PATH)
                 for r in final_list:
                     ws = wb[r['sheet']]
@@ -209,5 +205,5 @@ if files and m_code and date_inp and week_inp:
                 wb.save(FILE_PATH)
                 st.success("DATABASE BERHASIL DIPERBARUI!")
                 with open(FILE_PATH, "rb") as f:
-                    st.download_button("📥 DOWNLOAD REPORT", f, f"Update_Report_{date_inp}.xlsx")
+                    st.download_button("📥 DOWNLOAD REPORT", f, f"Report_{date_inp}.xlsx")
             st.download_button("🖼️ DOWNLOAD ZIP FOTO", zip_buffer.getvalue(), f"Photos_{m_code}.zip")
