@@ -18,7 +18,6 @@ SHEETS_TARGET = ["DF", "HBHC"]
 SHEET_MASTER_IG = "IG" 
 COL_IG_NAME = "PRODNAME_IG" 
 
-# Daftar Master sebagai "Jangkar" agar deteksi tetap akurat meski teks berantakan
 PRODUCT_MASTER_LIST = [
     "KAPAL API KOPI BUBUK SPECIAL RCG", "DELMONTE KETCHUP SAUS TOMAT", "DELMONTE CHILLI SAUCE EXTRA HOT",
     "MAESTRO MAYONNAISE", "PRINGLES POTATO CRISPS ORIGINAL", "ALE-ALE JUICE ORANGE",
@@ -50,13 +49,26 @@ TEXTS_TO_REDACT = [
     "AGUNG KURNIAWAN", "ARIF RAMADHAN", "HILMI ATIQ"
 ]
 
-st.set_page_config(page_title="Price Check V11.5", layout="wide")
+st.set_page_config(page_title="Price Check V11.8", layout="wide")
 
-def clean_price_robust(text_segment):
-    """Menghapus noise dan mengambil angka terakhir (harga promo)"""
-    clean_txt = re.sub(r'[^\d]', '', str(text_segment))
-    nums = re.findall(r'\d{3,7}', clean_txt)
-    return int(nums[-1]) if nums else 0
+def extract_prices_logic_v2(segment):
+    """
+    Logika:
+    1. Ambil teks antara RP dan / ISI
+    2. Jika ada 2 angka: Angka 1 = NORMAL, Angka 2 = PROMO
+    3. Jika ada 1 angka: PROMO = NORMAL = Angka 1
+    """
+    # Bersihkan segment hanya sampai '/ ISI'
+    clean_seg = segment.split("/ ISI")[0]
+    # Ambil semua angka 3-7 digit, hapus titik/koma
+    nums = re.findall(r'\d{3,7}', clean_seg.replace('.', '').replace(',', ''))
+    
+    if len(nums) >= 2:
+        return {"normal": int(nums[0]), "promo": int(nums[1])}
+    elif len(nums) == 1:
+        val = int(nums[0])
+        return {"promo": val, "normal": val}
+    return {"promo": 0, "normal": 0}
 
 def process_ocr_indogrosir(pil_image):
     img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
@@ -64,13 +76,10 @@ def process_ocr_indogrosir(pil_image):
     img_resized = cv2.resize(img_np, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
     
-    custom_config = r'--oem 3 --psm 6'
-    d = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT, config=custom_config)
-    
+    d = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT, config=r'--oem 3 --psm 6')
     df_ocr = pd.DataFrame(d)
     df_ocr['text'] = df_ocr['text'].fillna('').str.upper()
     
-    # Gabungkan baris untuk scan teks mentah
     df_ocr['line_id'] = df_ocr['block_num'].astype(str) + "_" + df_ocr['line_num'].astype(str)
     lines_df = df_ocr.groupby('line_id').agg({'text': lambda x: " ".join(x), 'top': 'min', 'height': 'max'}).reset_index()
     full_text_raw = " ".join(df_ocr['text'].tolist())
@@ -78,7 +87,7 @@ def process_ocr_indogrosir(pil_image):
     final_res = {"PCS": {"normal": 0, "promo": 0}, "CTN": {"normal": 0, "promo": 0}}
     prod_name = "N/A"
 
-    # --- 1. DETEKSI NAMA PRODUK DENGAN MASTER LIST ---
+    # --- DETEKSI NAMA PRODUK ---
     best_match_score = 0
     for master_name in PRODUCT_MASTER_LIST:
         score = fuzz.partial_ratio(master_name.upper(), full_text_raw)
@@ -86,19 +95,16 @@ def process_ocr_indogrosir(pil_image):
             best_match_score = score
             prod_name = master_name
 
-    # --- 2. DETEKSI HARGA PCS & CTN ---
-    # Regex ini mencari angka setelah 'PCS - RP' atau 'CTN - RP' meski teks berantakan
-    pcs_match = re.search(r"PCS\s*-\s*RP\s*([\d\.\-\s,]+?)(?=\s|ISI|/|PCS|CTN|$)", full_text_raw)
-    if pcs_match:
-        val = clean_price_robust(pcs_match.group(1))
-        final_res["PCS"] = {"normal": val, "promo": val}
+    # --- DETEKSI HARGA PCS & CTN ---
+    pcs_section = re.search(r"PCS\s*-\s*(.*?)/ ISI", full_text_raw)
+    if pcs_section:
+        final_res["PCS"] = extract_prices_logic_v2(pcs_section.group(1))
 
-    ctn_match = re.search(r"CTN\s*-\s*RP\s*([\d\.\-\s,]+?)(?=\s|ISI|/|PCS|CTN|$)", full_text_raw)
-    if ctn_match:
-        val = clean_price_robust(ctn_match.group(1))
-        final_res["CTN"] = {"normal": val, "promo": val}
+    ctn_section = re.search(r"CTN\s*-\s*(.*?)/ ISI", full_text_raw)
+    if ctn_section:
+        final_res["CTN"] = extract_prices_logic_v2(ctn_section.group(1))
 
-    # --- 3. LOGIKA REDAKSI (SENSOR) ---
+    # --- LOGIKA REDAKSI ---
     draw = ImageDraw.Draw(pil_image)
     for _, row in lines_df.iterrows():
         line_txt = str(row['text']).upper()
@@ -115,14 +121,14 @@ def process_ocr_indogrosir(pil_image):
 def norm(val):
     return str(val).replace(".0", "").replace(" ", "").strip().upper()
 
-st.title("📸 Price Check V11.5 - Master Keywords")
+st.title("📸 Price Check V11.8 - Fix Price Sequence")
 
 c1, c2, c3 = st.columns(3)
 with c1: m_code = st.text_input("📍 Master Code").upper()
-with c2: date_inp = st.text_input("📅 Tanggal (26JAN2026)").upper()
+with c2: date_inp = st.text_input("📅 Tanggal (CONTOH: 26JAN2026)").upper()
 with c3: week_inp = st.text_input("🗓️ Week")
 
-files = st.file_uploader("📂 Upload Foto", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+files = st.file_uploader("📂 Upload Screenshots", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
 if files and m_code and date_inp and week_inp:
     if os.path.exists(FILE_PATH):
@@ -135,11 +141,10 @@ if files and m_code and date_inp and week_inp:
         
         with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED) as zf:
             for f in files:
-                with st.expander(f"🔍 Scan: {f.name}", expanded=True):
+                with st.expander(f"🔍 Proses: {f.name}", expanded=True):
                     img_pil = Image.open(f)
                     pcs, ctn, name, raw, red_img = process_ocr_indogrosir(img_pil)
                     
-                    # Fuzzy Match ke Database IG
                     match_code, best_score = None, 0
                     for _, row in db_ig.iterrows():
                         db_n = str(row[COL_IG_NAME]).upper()
@@ -150,10 +155,11 @@ if files and m_code and date_inp and week_inp:
                     col_img, col_info = st.columns([1, 1.2])
                     with col_img: st.image(red_img)
                     with col_info:
-                        st.write(f"**Produk:** `{name}`")
-                        st.write(f"**Match:** `{match_code}` (Score: {best_score})")
-                        st.json({"PCS": pcs, "CTN": ctn})
-                        st.text_area("Debug Raw Text", value=raw, height=100)
+                        st.write(f"**Nama Produk:** `{name}`")
+                        st.write(f"**Match Prodcode:** `{match_code}`")
+                        st.info(f"PCS: Normal Rp {pcs['normal']:,} | Promo Rp {pcs['promo']:,}")
+                        st.success(f"CTN: Normal Rp {ctn['normal']:,} | Promo Rp {ctn['promo']:,}")
+                        st.text_area("OCR Raw Preview", value=raw, height=70)
 
                     if match_code:
                         for s_name, df_t in db_targets.items():
@@ -176,7 +182,7 @@ if files and m_code and date_inp and week_inp:
 
         if final_list:
             st.divider()
-            if st.button("🚀 EKSEKUSI UPDATE DATABASE EXCEL"):
+            if st.button("🚀 EKSEKUSI UPDATE & DOWNLOAD"):
                 wb = load_workbook(FILE_PATH)
                 for r in final_list:
                     ws = wb[r['sheet']]
@@ -189,9 +195,8 @@ if files and m_code and date_inp and week_inp:
                     for col_name, val in mapping.items():
                         if col_name in headers: ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
                 wb.save(FILE_PATH)
-                st.success("✅ Database diperbarui!")
-                
+                st.success("Database excel Berhasil Diupdate!")
                 with open(FILE_PATH, "rb") as f:
-                    st.download_button("📥 DOWNLOAD EXCEL", f, f"Report_{date_inp}.xlsx")
+                    st.download_button("📥 DOWNLOAD EXCEL", f, f"Update_{date_inp}.xlsx")
             
             st.download_button("🖼️ DOWNLOAD ZIP FOTO", zip_buffer.getvalue(), f"{m_code}_{date_inp}.zip")
