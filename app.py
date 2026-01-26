@@ -52,97 +52,94 @@ TEXTS_TO_REDACT = [
 st.set_page_config(page_title="PRICE CHECK", layout="wide")
 
 def clean_price_val(raw_str):
-    """Membersihkan simbol pemisah dan mengubah ke integer"""
+    if not raw_str: return 0
     clean = re.sub(r'[.,\-]', '', raw_str)
     try:
         return int(clean)
     except:
         return 0
 
-def process_ocr_spatial(pil_image):
+def process_ocr_spatial_v2(pil_image):
     # 1. Image Preprocessing
     img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
     scale = 2.0
     img_resized = cv2.resize(img_np, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
     
-    # 2. Get OCR Data with Coordinates
+    # 2. Get OCR Data
     d = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT, config=r'--oem 3 --psm 6')
     df = pd.DataFrame(d)
-    df = df[df['text'].str.strip() != ""] # Buang box kosong
+    df = df[df['text'].str.strip() != ""]
     df['text'] = df['text'].str.upper()
 
-    # 3. Spatial Grouping (Merapikan Baris berdasarkan koordinat 'top')
+    # 3. Double Sorting (Top then Left)
+    df = df.sort_values(by=['top', 'left'])
     lines = []
     if not df.empty:
-        df = df.sort_values(by=['top', 'left'])
         current_line_top = df.iloc[0]['top']
-        current_line_text = []
-        
+        temp_words = []
         for _, row in df.iterrows():
-            # Toleransi 15 pixel untuk dianggap baris yang sama
             if row['top'] - current_line_top > 15:
-                lines.append(" ".join(current_line_text))
-                current_line_text = [row['text']]
+                temp_words.sort(key=lambda x: x['left'])
+                lines.append(" ".join([w['text'] for w in temp_words]))
+                temp_words = [{'text': row['text'], 'left': row['left']}]
                 current_line_top = row['top']
             else:
-                current_line_text.append(row['text'])
-        lines.append(" ".join(current_line_text))
+                temp_words.append({'text': row['text'], 'left': row['left']})
+        temp_words.sort(key=lambda x: x['left'])
+        lines.append(" ".join([w['text'] for w in temp_words]))
     
     clean_full_text = "\n".join(lines)
-    full_text_single_line = " ".join(lines) # Untuk regex pencarian antar baris
+    single_line_text = " ".join(lines)
 
-    # 4. Ekstraksi Data
+    # 4. Extraction
     final_res = {"PCS": {"normal": 0, "promo": 0}, "CTN": {"normal": 0, "promo": 0}}
     prod_name = "N/A"
     promo_text = ""
 
-    # -- Nama Produk --
+    # -- Prod Name --
     best_match_score = 0
-    for master_name in PRODUCT_MASTER_LIST:
-        score = fuzz.partial_ratio(master_name.upper(), full_text_single_line)
+    for m_name in PRODUCT_MASTER_LIST:
+        score = fuzz.partial_ratio(m_name.upper(), single_line_text)
         if score > 80 and score > best_match_score:
             best_match_score = score
-            prod_name = master_name
+            prod_name = m_name
 
-    # -- Harga Eceran (PCS/RCG/BOX) --
-    # Logika: Cari baris yang mengandung (Unit) - (Harga1) (Harga2) / ISI
-    unit_pattern = re.search(r"(PCS|RCG|BOX)\s*-\s*RP\s*([\d\-\.,]+)\s+RP\s*([\d\-\.,]+)\s*/\s*ISI", clean_full_text)
-    if unit_pattern:
-        final_res["PCS"]["normal"] = clean_price_val(unit_pattern.group(2))
-        final_res["PCS"]["promo"] = clean_price_val(unit_pattern.group(3))
+    # -- Unit Price (PCS/RCG/BOX) --
+    # Regex ini lebih kuat: Mencari Unit -> Angka Harga 1 -> Angka Harga 2 -> Sebelum / ISI
+    unit_match = re.search(r"(PCS|RCG|BOX).*?RP\s*([\d\-\.,]+).*?RP\s*([\d\-\.,]+).*?/\s*ISI", single_line_text)
+    if unit_match:
+        final_res["PCS"]["normal"] = clean_price_val(unit_match.group(2))
+        final_res["PCS"]["promo"] = clean_price_val(unit_match.group(3))
     else:
-        # Fallback jika hanya ada 1 harga
-        single_unit = re.search(r"(PCS|RCG|BOX)\s*-\s*RP\s*([\d\-\.,]+)\s*/\s*ISI", clean_full_text)
-        if single_unit:
-            val = clean_price_val(single_unit.group(2))
+        # Fallback Single Price
+        unit_match_s = re.search(r"(PCS|RCG|BOX).*?RP\s*([\d\-\.,]+).*?/\s*ISI", single_line_text)
+        if unit_match_s:
+            val = clean_price_val(unit_match_s.group(2))
             final_res["PCS"] = {"normal": val, "promo": val}
 
-    # -- Harga Karton (CTN) --
-    ctn_pattern = re.search(r"CTN\s*-\s*RP\s*([\d\-\.,]+)\s+RP\s*([\d\-\.,]+)\s*/\s*ISI", clean_full_text)
-    if ctn_pattern:
-        final_res["CTN"]["normal"] = clean_price_val(ctn_pattern.group(1))
-        final_res["CTN"]["promo"] = clean_price_val(ctn_pattern.group(2))
-    else:
-        single_ctn = re.search(r"CTN\s*-\s*RP\s*([\d\-\.,]+)\s*/\s*ISI", clean_full_text)
-        if single_ctn:
-            val = clean_price_val(single_ctn.group(1))
-            final_res["CTN"] = {"normal": val, "promo": val}
+    # -- Carton Price (CTN) --
+    ctn_match = re.search(r"CTN.*?RP\s*([\d\-\.,]+).*?RP\s*([\d\-\.,]+).*?/\s*ISI", single_line_text)
+    if ctn_match:
+        final_res["CTN"]["normal"] = clean_price_val(ctn_match.group(1))
+        final_res["CTN"]["promo"] = clean_price_val(ctn_match.group(2))
 
-    # -- Promosi (Logika: | sampai RAP) --
-    if "MAU LEBIH UNTUNG" in clean_full_text:
-        promo_match = re.search(r"PROMO BERIKUT.*?\|\s*(.*?RAP)", clean_full_text, re.DOTALL)
+    # -- Promo Logic (Between | and RAP) --
+    if "MAU LEBIH UNTUNG" in single_line_text:
+        # Mencari pipa | yang diikuti teks dan diakhiri RAP
+        promo_match = re.search(r"[\|I1]\s*(.*?RAP)", single_line_text, re.DOTALL)
         if promo_match:
             promo_text = promo_match.group(1).strip()
+            # Bersihkan jika ada simbol sampah di awal teks yang terambil
+            promo_text = re.sub(r'^[^A-Z0-9]+', '', promo_text)
 
-    # 5. Redaksi (Sensor Nama)
+    # 5. Redaction
     draw = ImageDraw.Draw(pil_image)
     for _, row in df.iterrows():
         for kw in TEXTS_TO_REDACT:
             if fuzz.partial_ratio(kw, row['text']) > 80:
-                # Koordinat di mapping balik ke image asli
                 x, y, w, h = row['left']/scale, row['top']/scale, row['width']/scale, row['height']/scale
-                draw.rectangle([x-5, y-5, x+w+5, y+h+5], fill="white")
+                draw.rectangle([x-2, y-2, x+w+2, y+h+2], fill="white")
     
     return final_res["PCS"], final_res["CTN"], prod_name, clean_full_text, pil_image, promo_text
 
@@ -154,16 +151,15 @@ st.title("PRICE CHECK")
 
 c1, c2, c3 = st.columns(3)
 with c1: m_code = st.text_input("📍 MASTER CODE").upper()
-with c2: date_inp = st.text_input("📅 TANGGAL").upper()
+with c2: date_inp = st.text_input("📅 TANGGAL (Contoh: 26 JAN)").upper()
 with c3: week_inp = st.text_input("🗓️ WEEK")
 
-files = st.file_uploader("📂 UPLOAD FOTO", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+files = st.file_uploader("📂 UPLOAD SCREENSHOTS", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
 if files and m_code and date_inp and week_inp:
     if os.path.exists(FILE_PATH):
         db_ig = pd.read_excel(FILE_PATH, sheet_name=SHEET_MASTER_IG)
         db_targets = {s: pd.read_excel(FILE_PATH, sheet_name=s) for s in SHEETS_TARGET}
-
         final_list = []
         zip_buffer = io.BytesIO()
         
@@ -171,8 +167,9 @@ if files and m_code and date_inp and week_inp:
             for f in files:
                 with st.container(border=True):
                     img_pil = Image.open(f)
-                    pcs, ctn, name, raw_text, red_img, p_desc = process_ocr_spatial(img_pil)
+                    pcs, ctn, name, raw_text, red_img, p_desc = process_ocr_spatial_v2(img_pil)
                     
+                    # Prodcode Mapping
                     match_code, best_score = None, 0
                     for _, row in db_ig.iterrows():
                         db_n = str(row[COL_IG_NAME]).upper()
@@ -180,24 +177,20 @@ if files and m_code and date_inp and week_inp:
                         if score > 70 and score > best_score:
                             best_score, match_code = score, norm(row["PRODCODE"])
                     
-                    st.subheader(f"🔍 Scan: {f.name}")
+                    st.subheader(f"📄 Scan: {f.name}")
                     col_img, col_info = st.columns([1, 1.2])
-                    
-                    with col_img:
-                        st.image(red_img)
-                    
+                    with col_img: st.image(red_img)
                     with col_info:
                         st.markdown(f"### {name}")
-                        st.caption(f"Match Code: {match_code} (Score: {best_score})")
+                        st.write(f"Match Code: `{match_code}`")
                         st.info(f"**PROMOSI:** {p_desc if p_desc else '-'}")
-                        
                         m1, m2 = st.columns(2)
                         m1.metric("UNIT Normal", f"Rp {pcs['normal']:,}")
                         m1.metric("UNIT Promo", f"Rp {pcs['promo']:,}")
                         m2.metric("CTN Normal", f"Rp {ctn['normal']:,}")
                         m2.metric("CTN Promo", f"Rp {ctn['promo']:,}")
 
-                    with st.expander("📄 LIHAT STRUKTUR SCAN (BY COORDINATES)"):
+                    with st.expander("📄 LIHAT HASIL SCAN TERSTRUKTUR"):
                         st.text(raw_text)
 
                     if match_code:
@@ -213,16 +206,15 @@ if files and m_code and date_inp and week_inp:
                                     "n_ctn": ctn['normal'], "p_ctn": ctn['promo'],
                                     "p_desc": p_desc
                                 })
-                                if red_img.mode != "RGB": red_img = red_img.convert("RGB")
                                 buf = io.BytesIO()
-                                red_img.save(buf, format="JPEG", quality=85)
+                                red_img.convert("RGB").save(buf, format="JPEG")
                                 zf.writestr(f"{match_code}.jpg", buf.getvalue())
                                 break
                 gc.collect()
 
         if final_list:
             st.divider()
-            if st.button("🚀 EKSEKUSI UPDATE KE EXCEL"):
+            if st.button("🚀 UPDATE DATABASE EXCEL"):
                 wb = load_workbook(FILE_PATH)
                 for r in final_list:
                     ws = wb[r['sheet']]
@@ -239,8 +231,7 @@ if files and m_code and date_inp and week_inp:
                         if col_name in headers:
                             ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
                 wb.save(FILE_PATH)
-                st.success("DATABASE EXCEL BERHASIL DIPERBARUI!")
+                st.success("DATABASE BERHASIL DIUPDATE!")
                 with open(FILE_PATH, "rb") as f:
-                    st.download_button("📥 DOWNLOAD REPORT EXCEL", f, f"Update_{date_inp}.xlsx")
-            
+                    st.download_button("📥 DOWNLOAD REPORT", f, f"Report_{date_inp}.xlsx")
             st.download_button("🖼️ DOWNLOAD ZIP FOTO", zip_buffer.getvalue(), f"{m_code}_{date_inp}.zip")
