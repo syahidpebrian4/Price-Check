@@ -130,11 +130,11 @@ def process_ocr_final(pil_image):
 def norm(val):
     return str(val).replace(".0", "").replace(" ", "").strip().upper()
 
-st.title("📸 Price Check V14.0 - Final Robust Version")
+st.title("📸 Price Check")
 
 col_a, col_b, col_c = st.columns(3)
 with col_a: m_code = st.text_input("📍 MASTER CODE").upper()
-with col_b: date_inp = st.text_input("📅 TANGGAL SCAN").upper()
+with col_b: date_inp = st.text_input("📅 TANGGAL").upper()
 with col_c: week_inp = st.text_input("🗓️ WEEK")
 
 files = st.file_uploader("📂 UPLOAD SCREENSHOTS", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
@@ -195,7 +195,7 @@ if files and m_code and date_inp and week_inp:
 
         if final_list:
             st.divider()
-            if st.button("🚀 UPDATE DATABASE EXCEL"):
+            if st.button("🚀 UPDATE DATABASE"):
                 wb = load_workbook(FILE_PATH)
                 for r in final_list:
                     ws = wb[r['sheet']]
@@ -214,7 +214,8 @@ if files and m_code and date_inp and week_inp:
                 wb.save(FILE_PATH)
                 st.success("DATABASE UPDATED!")
                 with open(FILE_PATH, "rb") as f:
-                    st.download_button("📥 DOWNLOAD REPORT", f, f"Report_{date_inp}.xlsx")
-            st.download_button("🖼️ DOWNLOAD ZIP FOTO", zip_buffer.getvalue(), f"Photos_{m_code}.zip")
+                    st.download_button("📥 DOWNLOAD EXCELL", f, f"Report_{date_inp}.xlsx")
+            st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"Photos_{m_code}.zip")
     else:
         st.error(f"Database Excel tidak ditemukan di: {FILE_PATH}")
+
