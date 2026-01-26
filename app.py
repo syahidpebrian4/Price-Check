@@ -18,68 +18,44 @@ SHEETS_TARGET = ["DF", "HBHC"]
 SHEET_MASTER_IG = "IG" 
 COL_IG_NAME = "PRODNAME_IG" 
 
-PRODUCT_MASTER_LIST = [
-    "KAPAL API KOPI BUBUK SPECIAL RCG", "DELMONTE KETCHUP SAUS TOMAT", "DELMONTE CHILLI SAUCE EXTRA HOT",
-    "MAESTRO MAYONNAISE", "PRINGLES POTATO CRISPS ORIGINAL", "ALE-ALE JUICE ORANGE",
-    "MOMOGI SNACK STICK JAGUNG BAKAR", "INDOFOOD BUMBU RACIK AYAM GORENG", "ROSE TEPUNG BERAS",
-    "MINUTE MAID JUICE PULPY ORANGE", "TEH GELAS MINUMAN TEH ALAMI", "LUWAK WHITE KOFFIE ORIGINAL",
-    "FLORIDINA JUICE PULP ORANGE", "ENERGEN CEREAL INSTANT VANILLA", "ROMA BISCUIT KELAPA",
-    "AJINOMOTO PENYEDAP RASA MASAKO", "REGAL MARIE", "CHOKI CHOKI CHOCO CASHEW",
-    "NABATI RICHEESE WAFER KRIM KEJU", "FRISIAN FLAG KENTAL MANIS", "INDOCAFE COFFEE MIX 3 IN 1",
-    "POP ICE DRINK POWDER", "ABC KOPI INSTANT", "ULTRA SUSU CAIR UHT", "YOU C1000 HEALTH DRINK",
-    "POCARI SWEAT MINUMAN ISOTONIK", "BLUE BAND MARGARINE SERBAGUNA", "INDOMIE MIE GORENG PLUS SPECIAL",
-    "INDOMIE MIE INSTANT SOTO MIE", "POP MIE MI INSTAN LAPEER", "SEDAAP MIE MIE INSTANT",
-    "3 AYAM MIE TELOR", "BANGO KECAP MANIS", "ULTRA TEH KOTAK JASMINE", "GOLDA COFFEE DRINK",
-    "GOOD DAY KOPI INSTANT", "MILKU SUSU UHT", "BENG-BENG WAFER CHOCOLATE", "SUN KARA SANTAN KELAPA",
-    "ROMA SANDWICH BETTER", "CHIKI SNACK BALLS AYAM", "ROYCO BUMBU PELEZAT", "TANGO WAFER CHOCOLATE",
-    "LOTTE CHOCO PIE", "MR.P KACANG MADU", "SOSRO TEH BOTOL", "ABC KECAP MANIS", "SEGITIGA BIRU TEPUNG TERIGU",
-    "KOMPAS TEPUNG TERIGU", "AJINOMOTO TEPUNG BUMBU SAJIKU", "TARO SNACK", "PANTHER MINUMAN SUPPLEMEN",
-    "MAX TEA INSTANT DRINK", "YUPI CANDY GUMMY", "MILO HEALTY DRINK", "AQUA AIR MINERAL",
-    "MEIJI BISCUIT HELLO PANDA", "SIDO MUNCUL JAMU TOLAK ANGIN", "MAMY POKO PANTS",
-    "REXONA DEO LOTION", "PANTENE SHAMPOO", "PEPSODENT PASTA GIGI", "DOWNY SOFTENER",
-    "SUNSILK SHAMPOO", "SUNLIGHT CAIRAN CUCI PIRING", "EKONOMI SABUN CREAM", "SO KLIN DETERGENT CAIR",
-    "BAYGON INSEKTISIDA SPRAY", "LIFEBUOY SABUN MANDI", "MOLTO PELEMBUT", "MAMA LEMON",
-    "RINSO DETERGEN", "NUVO SABUN KESEHATAN", "SO SOFT DETERJEN CAIR", "CAP LANG MINYAK KAYU PUTIH",
-    "ZINC SHAMPOO", "POSH MEN DEO LOTION"
-]
-
+# Redaksi data sensitif
 TEXTS_TO_REDACT = [
-    "HALO AI YUYUN SUMARNI", "AL YUYUN SUMARNI", "WAYAN GIYANTO", 
-    "MEMBER UMUM KLIK", "DJUANMING", "NONOK JUNENGSIH", 
-    "AGUNG KURNIAWAN", "ARIF RAMADHAN", "HILMI ATIQ"
+    "HALO, AL YUYUN SUMARNI", "AL YUYUN SUMARNI", "MEMBER UMUM KLIK", 
+    "088902864826", "02121584272", "CS.KLIK@INDOGROSIR.CO.ID"
 ]
 
-st.set_page_config(page_title="PRICE CHECK", layout="wide")
+st.set_page_config(page_title="PRICE CHECK V12.8", layout="wide")
 
 def clean_price_val(raw_str):
+    """Membuang semua karakter kecuali angka agar kebal terhadap simbol sampah OCR"""
     if not raw_str: return 0
-    clean = re.sub(r'[.,\-]', '', raw_str)
+    clean = re.sub(r'[^\d]', '', raw_str)
     try:
         return int(clean)
     except:
         return 0
 
-def process_ocr_v12_7(pil_image):
-    # 1. Image Preprocessing
+def process_ocr_v12_8(pil_image):
+    # 1. Preprocessing
     img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-    scale = 2.0
+    scale = 2.5 # Menaikkan skala sedikit untuk membantu pembacaan teks kecil
     img_resized = cv2.resize(img_np, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
     
-    # 2. OCR Data
+    # 2. OCR Execution
     d = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT, config=r'--oem 3 --psm 6')
     df = pd.DataFrame(d)
     df = df[df['text'].str.strip() != ""]
     df['text'] = df['text'].str.upper()
 
-    # 3. Double Sort (Merapikan koordinat agar satu baris)
+    # 3. Spatial Grouping (Top-Down & Left-Right Sorting)
     df = df.sort_values(by=['top', 'left'])
     lines = []
     if not df.empty:
         current_line_top = df.iloc[0]['top']
         temp_words = []
         for _, row in df.iterrows():
-            if row['top'] - current_line_top > 15:
+            if row['top'] - current_line_top > 20: # Toleransi baris
                 temp_words.sort(key=lambda x: x['left'])
                 lines.append(" ".join([w['text'] for w in temp_words]))
                 temp_words = [{'text': row['text'], 'left': row['left']}]
@@ -92,51 +68,48 @@ def process_ocr_v12_7(pil_image):
     clean_full_text = "\n".join(lines)
     single_line_text = " ".join(lines)
 
-    # 4. Extraction
-    final_res = {"PCS": {"normal": 0, "promo": 0}, "CTN": {"normal": 0, "promo": 0}}
+    # 4. Deteksi Nama Produk Secara Dinamis
+    # Mencari teks sebelum kata 'POTONGAN' atau setelah navigasi kategori
     prod_name = "N/A"
-    promo_text = "-"
+    # Pola: ambil baris yang mengandung (nomor kode) dan nama sebelum label 'POTONGAN'
+    name_search = re.search(r"(.*?)\n\s*POTONGAN", clean_full_text, re.DOTALL)
+    if name_search:
+        # Mengambil baris terakhir dari hasil capture sebelum kata POTONGAN
+        lines_before = name_search.group(1).strip().split('\n')
+        prod_name = lines_before[-1].strip()
+    
+    # 5. Ekstraksi Harga (PCS & CTN)
+    final_res = {"PCS": {"normal": 0, "promo": 0}, "CTN": {"normal": 0, "promo": 0}}
+    
+    # Pattern PCS/RCG/BOX
+    unit_m = re.search(r"(PCS|RCG|BOX).*?RP\s*([\d\-\.,%]+).*?RP\s*([\d\-\.,%]+).*?/\s*ISI", single_line_text)
+    if unit_m:
+        final_res["PCS"]["normal"] = clean_price_val(unit_m.group(2))
+        final_res["PCS"]["promo"] = clean_price_val(unit_m.group(3))
 
-    # -- Prod Name --
-    best_match_score = 0
-    for m_name in PRODUCT_MASTER_LIST:
-        score = fuzz.partial_ratio(m_name.upper(), single_line_text)
-        if score > 80 and score > best_match_score:
-            best_match_score = score
-            prod_name = m_name
-
-    # -- Harga Unit (PCS/RCG/BOX) --
-    # Mencari pola: Satuan -> Harga1 -> Harga2 -> / ISI
-    price_unit = re.search(r"(PCS|RCG|BOX).*?RP\s*([\d\-\.,]+).*?RP\s*([\d\-\.,]+).*?/\s*ISI", single_line_text)
-    if price_unit:
-        final_res["PCS"]["normal"] = clean_price_val(price_unit.group(2))
-        final_res["PCS"]["promo"] = clean_price_val(price_unit.group(3))
-    else:
-        # Fallback Single Price
-        unit_s = re.search(r"(PCS|RCG|BOX).*?RP\s*([\d\-\.,]+).*?/\s*ISI", single_line_text)
-        if unit_s:
-            v = clean_price_val(unit_s.group(2))
-            final_res["PCS"] = {"normal": v, "promo": v}
-
-    # -- Harga Karton (CTN) --
-    ctn_m = re.search(r"CTN.*?RP\s*([\d\-\.,]+).*?RP\s*([\d\-\.,]+).*?/\s*ISI", single_line_text)
+    # Pattern CTN (Ditingkatkan untuk menangkap angka di tengah simbol sampah seperti RPT%.000)
+    ctn_m = re.search(r"CTN.*?RP?\s*([\d\-\.,%]+).*?RP\s*([\d\-\.,%]+).*?/\s*ISI", single_line_text)
     if ctn_m:
         final_res["CTN"]["normal"] = clean_price_val(ctn_m.group(1))
         final_res["CTN"]["promo"] = clean_price_val(ctn_m.group(2))
 
-    # -- PROMO LOGIC V12.7 (Top-Down Filtering) --
-    keyword = "MAU LEBIH UNTUNG"
+    # 6. Logika Promosi Khusus (Antara Keyword dan RAP)
+    promo_desc = "-"
+    keyword = "MAU LEBIH UNTUNG? CEK MEKANISME PROMO BERIKUT"
     if keyword in single_line_text:
-        # Buang teks sebelum keyword agar tidak kena teks navigasi atas
-        relevant_part = single_line_text.split(keyword)[-1]
-        # Cari pipa | sampai RAP
-        promo_match = re.search(r"[\|I1l]\s*(.*?RAP)", relevant_part, re.DOTALL)
+        after_keyword = single_line_text.split(keyword)[-1]
+        # Mengambil teks di antara tanda pipa pertama dan tanda pipa sebelum RAP
+        promo_match = re.search(r"[\|I1l]\s*(.*?)\s*[\|I1l]\s*RAP", after_keyword, re.DOTALL)
         if promo_match:
-            promo_text = promo_match.group(1).strip()
-            # Pembersihan simbol sampah di awal
-            promo_text = re.sub(r'^[^A-Z0-9]+', '', promo_text)
+            promo_desc = promo_match.group(1).strip()
+            promo_desc = re.sub(r'^[^A-Z0-9]+', '', promo_desc) # Bersihkan sampah awal
+        else:
+            # Fallback jika pipa tidak lengkap
+            promo_match_alt = re.search(r"[\|I1l]\s*(.*?RAP)", after_keyword, re.DOTALL)
+            if promo_match_alt:
+                promo_desc = promo_match_alt.group(1).replace("RAP", "").strip()
 
-    # 5. Redaction
+    # 7. Redaksi / Sensor
     draw = ImageDraw.Draw(pil_image)
     for _, row in df.iterrows():
         for kw in TEXTS_TO_REDACT:
@@ -144,13 +117,13 @@ def process_ocr_v12_7(pil_image):
                 x, y, w, h = row['left']/scale, row['top']/scale, row['width']/scale, row['height']/scale
                 draw.rectangle([x-2, y-2, x+w+2, y+h+2], fill="white")
     
-    return final_res["PCS"], final_res["CTN"], prod_name, clean_full_text, pil_image, promo_text
+    return final_res["PCS"], final_res["CTN"], prod_name, clean_full_text, pil_image, promo_desc
 
 # ================= UI STREAMLIT =================
 def norm(val):
     return str(val).replace(".0", "").replace(" ", "").strip().upper()
 
-st.title("PRICE CHECK")
+st.title("PRICE CHECK - V12.8")
 
 c1, c2, c3 = st.columns(3)
 with c1: m_code = st.text_input("📍 MASTER CODE").upper()
@@ -170,21 +143,22 @@ if files and m_code and date_inp and week_inp:
             for f in files:
                 with st.container(border=True):
                     img_pil = Image.open(f)
-                    pcs, ctn, name, raw_text, red_img, p_desc = process_ocr_v12_7(img_pil)
+                    pcs, ctn, name, raw_text, red_img, p_desc = process_ocr_v12_8(img_pil)
                     
+                    # Fuzzy match untuk prodcode (karena nama produk sekarang sangat panjang)
                     match_code, best_score = None, 0
                     for _, row in db_ig.iterrows():
                         db_n = str(row[COL_IG_NAME]).upper()
-                        score = fuzz.token_set_ratio(db_n, name)
-                        if score > 70 and score > best_score:
+                        score = fuzz.partial_ratio(db_n, name)
+                        if score > 75 and score > best_score:
                             best_score, match_code = score, norm(row["PRODCODE"])
                     
-                    st.subheader(f"📄 Scan: {f.name}")
+                    st.subheader(f"📄 File: {f.name}")
                     col_img, col_info = st.columns([1, 1.2])
                     with col_img: st.image(red_img)
                     with col_info:
                         st.markdown(f"### {name}")
-                        st.write(f"Match Code: `{match_code}`")
+                        st.write(f"Match Prodcode: `{match_code}` (Score: {best_score})")
                         st.info(f"**PROMOSI:** {p_desc}")
                         m1, m2 = st.columns(2)
                         m1.metric("UNIT Normal", f"Rp {pcs['normal']:,}")
@@ -192,7 +166,7 @@ if files and m_code and date_inp and week_inp:
                         m2.metric("CTN Normal", f"Rp {ctn['normal']:,}")
                         m2.metric("CTN Promo", f"Rp {ctn['promo']:,}")
 
-                    with st.expander("📄 LIHAT HASIL SCAN TERSTRUKTUR"):
+                    with st.expander("📄 LIHAT DATA MENTAH SCAN (RE-STRUCTURED)"):
                         st.text(raw_text)
 
                     if match_code:
@@ -216,7 +190,7 @@ if files and m_code and date_inp and week_inp:
 
         if final_list:
             st.divider()
-            if st.button("🚀 UPDATE DATABASE EXCEL"):
+            if st.button("🚀 EKSEKUSI UPDATE KE EXCEL"):
                 wb = load_workbook(FILE_PATH)
                 for r in final_list:
                     ws = wb[r['sheet']]
@@ -233,7 +207,7 @@ if files and m_code and date_inp and week_inp:
                         if col_name in headers:
                             ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
                 wb.save(FILE_PATH)
-                st.success("DATABASE BERHASIL DIUPDATE!")
+                st.success("DATABASE BERHASIL DIPERBARUI!")
                 with open(FILE_PATH, "rb") as f:
-                    st.download_button("📥 DOWNLOAD REPORT", f, f"Report_{date_inp}.xlsx")
-            st.download_button("🖼️ DOWNLOAD ZIP FOTO", zip_buffer.getvalue(), f"{m_code}_{date_inp}.zip")
+                    st.download_button("📥 DOWNLOAD REPORT", f, f"Update_Report_{date_inp}.xlsx")
+            st.download_button("🖼️ DOWNLOAD ZIP FOTO", zip_buffer.getvalue(), f"Photos_{m_code}.zip")
