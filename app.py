@@ -52,7 +52,6 @@ TEXTS_TO_REDACT = [
 st.set_page_config(page_title="PRICE CHECK", layout="wide")
 
 def extract_prices_logic(segment):
-    """Logika: Harga 1 = Normal, Harga 2 = Promo"""
     target_text = segment.split("/ ISI")[0]
     target_text = re.sub(r'[.,\-]', '', target_text)
     nums = re.findall(r'\d{4,7}', target_text)
@@ -91,24 +90,28 @@ def process_ocr_indogrosir(pil_image):
             best_match_score = score
             prod_name = master_name
 
-    # 2. DETEKSI HARGA (Support PCS, RCG, BOX)
-    # Mencari pola: (PCS atau RCG atau BOX) diikuti tanda hubung/minus (-)
-    unit_section = re.search(r"(PCS|RCG|BOX)\s*-\s*(.*?)/ ISI", full_text_raw)
-    if unit_section:
-        final_res["PCS"] = extract_prices_logic(unit_section.group(2))
+    # 2. DETEKSI HARGA (UNIT & CTN)
+    unit_match = re.search(r"(PCS|RCG|BOX)\s*-\s*(.*?)/ ISI", full_text_raw)
+    if unit_match:
+        final_res["PCS"] = extract_prices_logic(unit_match.group(2))
 
-    # Deteksi Karton (CTN) tetap sama
-    ctn_section = re.search(r"CTN\s*-\s*(.*?)/ ISI", full_text_raw)
-    if ctn_section:
-        final_res["CTN"] = extract_prices_logic(ctn_section.group(1))
+    ctn_match = re.search(r"CTN\s*-\s*(.*?)/ ISI", full_text_raw)
+    if ctn_match:
+        final_res["CTN"] = extract_prices_logic(ctn_match.group(1))
 
-    # 3. DETEKSI PROMO
+    # 3. DETEKSI PROMOSI (LOGIKA V12.4: Antara | sampai RAP)
     if "MAU LEBIH UNTUNG" in full_text_raw:
-        promo_match = re.search(r"PROMO BERIKUT\s*\|\s*(.*?)\s*\|", full_text_raw)
+        # Regex mencari tanda pipa setelah kata kunci, ambil teks sampai bertemu "RAP"
+        promo_match = re.search(r"PROMO BERIKUT.*?\|\s*(.*?RAP)", full_text_raw, re.DOTALL)
         if promo_match:
             promo_text = promo_match.group(1).strip()
+        else:
+            # Cadangan jika "RAP" tidak terbaca sempurna
+            promo_match_alt = re.search(r"PROMO BERIKUT.*?\|\s*(.*?)\|", full_text_raw, re.DOTALL)
+            if promo_match_alt:
+                promo_text = promo_match_alt.group(1).strip()
 
-    # 4. REDAKSI
+    # 4. REDAKSI DATA SENSITIF
     draw = ImageDraw.Draw(pil_image)
     for _, row in lines_df.iterrows():
         line_txt = str(row['text']).upper()
@@ -155,21 +158,21 @@ if files and m_code and date_inp and week_inp:
                         if score > 70 and score > best_score:
                             best_score, match_code = score, norm(row["PRODCODE"])
                     
-                    st.subheader(f"🔍 File: {f.name}")
+                    st.subheader(f"🔍 Scan: {f.name}")
                     col_img, col_info = st.columns([1, 1.2])
                     with col_img: st.image(red_img)
                     with col_info:
                         st.markdown(f"### {name}")
-                        st.write(f"Prodcode: `{match_code}`")
+                        st.write(f"**Prodcode Match:** `{match_code}`")
                         st.info(f"**PROMOSI:** {p_desc if p_desc else '-'}")
                         
                         m1, m2 = st.columns(2)
-                        m1.metric("UNIT Normal", f"{pcs['normal']:,}")
-                        m1.metric("UNIT Promo", f"{pcs['promo']:,}")
-                        m2.metric("CTN Normal", f"{ctn['normal']:,}")
-                        m2.metric("CTN Promo", f"{ctn['promo']:,}")
+                        m1.metric("UNIT Normal", f"Rp {pcs['normal']:,}")
+                        m1.metric("UNIT Promo", f"Rp {pcs['promo']:,}")
+                        m2.metric("CTN Normal", f"Rp {ctn['normal']:,}")
+                        m2.metric("CTN Promo", f"Rp {ctn['promo']:,}")
 
-                    with st.expander("📄 LIHAT HASIL SCAN KESELURUHAN (RAW TEXT)"):
+                    with st.expander("📄 HASIL SCAN KESELURUHAN (RAW TEXT)"):
                         st.code(raw_lines, language="text")
 
                     if match_code:
@@ -183,7 +186,7 @@ if files and m_code and date_inp and week_inp:
                                     "prodcode": match_code, "sheet": s_name, "index": match_row.index[0],
                                     "n_pcs": pcs['normal'], "p_pcs": pcs['promo'],
                                     "n_ctn": ctn['normal'], "p_ctn": ctn['promo'],
-                                    "promo_desc": p_desc
+                                    "p_desc": p_desc
                                 })
                                 if red_img.mode != "RGB": red_img = red_img.convert("RGB")
                                 buf = io.BytesIO()
@@ -194,7 +197,7 @@ if files and m_code and date_inp and week_inp:
 
         if final_list:
             st.divider()
-            if st.button("🚀 EKSEKUSI UPDATE & DOWNLOAD"):
+            if st.button("🚀 EKSEKUSI UPDATE DATABASE EXCEL"):
                 wb = load_workbook(FILE_PATH)
                 for r in final_list:
                     ws = wb[r['sheet']]
@@ -205,13 +208,14 @@ if files and m_code and date_inp and week_inp:
                         "Promo Competitor Price (Pcs)": r['p_pcs'],
                         "Normal Competitor Price (Ctn)": r['n_ctn'],
                         "Promo Competitor Price (Ctn)": r['p_ctn'],
-                        "Promosi Competitor": r['promo_desc']
+                        "Promosi Competitor": r['p_desc']
                     }
                     for col_name, val in mapping.items():
-                        if col_name in headers: ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
+                        if col_name in headers:
+                            ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
                 wb.save(FILE_PATH)
-                st.success("DATABASE BERHASIL DIUPDATE!")
+                st.success("DATABASE EXCEL BERHASIL DIUPDATE!")
                 with open(FILE_PATH, "rb") as f:
-                    st.download_button("📥 DOWNLOAD EXCEL", f, f"Report_{date_inp}.xlsx")
+                    st.download_button("📥 DOWNLOAD EXCEL HASIL", f, f"Price_Report_{date_inp}.xlsx")
             
             st.download_button("🖼️ DOWNLOAD ZIP FOTO", zip_buffer.getvalue(), f"{m_code}_{date_inp}.zip")
