@@ -59,20 +59,20 @@ def clean_price_val(raw_str):
     except:
         return 0
 
-def process_ocr_spatial_v2(pil_image):
+def process_ocr_v12_7(pil_image):
     # 1. Image Preprocessing
     img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
     scale = 2.0
     img_resized = cv2.resize(img_np, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
     
-    # 2. Get OCR Data
+    # 2. OCR Data
     d = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT, config=r'--oem 3 --psm 6')
     df = pd.DataFrame(d)
     df = df[df['text'].str.strip() != ""]
     df['text'] = df['text'].str.upper()
 
-    # 3. Double Sorting (Top then Left)
+    # 3. Double Sort (Merapikan koordinat agar satu baris)
     df = df.sort_values(by=['top', 'left'])
     lines = []
     if not df.empty:
@@ -95,7 +95,7 @@ def process_ocr_spatial_v2(pil_image):
     # 4. Extraction
     final_res = {"PCS": {"normal": 0, "promo": 0}, "CTN": {"normal": 0, "promo": 0}}
     prod_name = "N/A"
-    promo_text = ""
+    promo_text = "-"
 
     # -- Prod Name --
     best_match_score = 0
@@ -105,32 +105,35 @@ def process_ocr_spatial_v2(pil_image):
             best_match_score = score
             prod_name = m_name
 
-    # -- Unit Price (PCS/RCG/BOX) --
-    # Regex ini lebih kuat: Mencari Unit -> Angka Harga 1 -> Angka Harga 2 -> Sebelum / ISI
-    unit_match = re.search(r"(PCS|RCG|BOX).*?RP\s*([\d\-\.,]+).*?RP\s*([\d\-\.,]+).*?/\s*ISI", single_line_text)
-    if unit_match:
-        final_res["PCS"]["normal"] = clean_price_val(unit_match.group(2))
-        final_res["PCS"]["promo"] = clean_price_val(unit_match.group(3))
+    # -- Harga Unit (PCS/RCG/BOX) --
+    # Mencari pola: Satuan -> Harga1 -> Harga2 -> / ISI
+    price_unit = re.search(r"(PCS|RCG|BOX).*?RP\s*([\d\-\.,]+).*?RP\s*([\d\-\.,]+).*?/\s*ISI", single_line_text)
+    if price_unit:
+        final_res["PCS"]["normal"] = clean_price_val(price_unit.group(2))
+        final_res["PCS"]["promo"] = clean_price_val(price_unit.group(3))
     else:
         # Fallback Single Price
-        unit_match_s = re.search(r"(PCS|RCG|BOX).*?RP\s*([\d\-\.,]+).*?/\s*ISI", single_line_text)
-        if unit_match_s:
-            val = clean_price_val(unit_match_s.group(2))
-            final_res["PCS"] = {"normal": val, "promo": val}
+        unit_s = re.search(r"(PCS|RCG|BOX).*?RP\s*([\d\-\.,]+).*?/\s*ISI", single_line_text)
+        if unit_s:
+            v = clean_price_val(unit_s.group(2))
+            final_res["PCS"] = {"normal": v, "promo": v}
 
-    # -- Carton Price (CTN) --
-    ctn_match = re.search(r"CTN.*?RP\s*([\d\-\.,]+).*?RP\s*([\d\-\.,]+).*?/\s*ISI", single_line_text)
-    if ctn_match:
-        final_res["CTN"]["normal"] = clean_price_val(ctn_match.group(1))
-        final_res["CTN"]["promo"] = clean_price_val(ctn_match.group(2))
+    # -- Harga Karton (CTN) --
+    ctn_m = re.search(r"CTN.*?RP\s*([\d\-\.,]+).*?RP\s*([\d\-\.,]+).*?/\s*ISI", single_line_text)
+    if ctn_m:
+        final_res["CTN"]["normal"] = clean_price_val(ctn_m.group(1))
+        final_res["CTN"]["promo"] = clean_price_val(ctn_m.group(2))
 
-    # -- Promo Logic (Between | and RAP) --
-    if "MAU LEBIH UNTUNG" in single_line_text:
-        # Mencari pipa | yang diikuti teks dan diakhiri RAP
-        promo_match = re.search(r"[\|I1]\s*(.*?RAP)", single_line_text, re.DOTALL)
+    # -- PROMO LOGIC V12.7 (Top-Down Filtering) --
+    keyword = "MAU LEBIH UNTUNG"
+    if keyword in single_line_text:
+        # Buang teks sebelum keyword agar tidak kena teks navigasi atas
+        relevant_part = single_line_text.split(keyword)[-1]
+        # Cari pipa | sampai RAP
+        promo_match = re.search(r"[\|I1l]\s*(.*?RAP)", relevant_part, re.DOTALL)
         if promo_match:
             promo_text = promo_match.group(1).strip()
-            # Bersihkan jika ada simbol sampah di awal teks yang terambil
+            # Pembersihan simbol sampah di awal
             promo_text = re.sub(r'^[^A-Z0-9]+', '', promo_text)
 
     # 5. Redaction
@@ -151,7 +154,7 @@ st.title("PRICE CHECK")
 
 c1, c2, c3 = st.columns(3)
 with c1: m_code = st.text_input("📍 MASTER CODE").upper()
-with c2: date_inp = st.text_input("📅 TANGGAL (Contoh: 26 JAN)").upper()
+with c2: date_inp = st.text_input("📅 TANGGAL (Ex: 26 JAN)").upper()
 with c3: week_inp = st.text_input("🗓️ WEEK")
 
 files = st.file_uploader("📂 UPLOAD SCREENSHOTS", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
@@ -167,9 +170,8 @@ if files and m_code and date_inp and week_inp:
             for f in files:
                 with st.container(border=True):
                     img_pil = Image.open(f)
-                    pcs, ctn, name, raw_text, red_img, p_desc = process_ocr_spatial_v2(img_pil)
+                    pcs, ctn, name, raw_text, red_img, p_desc = process_ocr_v12_7(img_pil)
                     
-                    # Prodcode Mapping
                     match_code, best_score = None, 0
                     for _, row in db_ig.iterrows():
                         db_n = str(row[COL_IG_NAME]).upper()
@@ -183,7 +185,7 @@ if files and m_code and date_inp and week_inp:
                     with col_info:
                         st.markdown(f"### {name}")
                         st.write(f"Match Code: `{match_code}`")
-                        st.info(f"**PROMOSI:** {p_desc if p_desc else '-'}")
+                        st.info(f"**PROMOSI:** {p_desc}")
                         m1, m2 = st.columns(2)
                         m1.metric("UNIT Normal", f"Rp {pcs['normal']:,}")
                         m1.metric("UNIT Promo", f"Rp {pcs['promo']:,}")
