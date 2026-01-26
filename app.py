@@ -18,17 +18,16 @@ SHEETS_TARGET = ["DF", "HBHC"]
 SHEET_MASTER_IG = "IG" 
 COL_IG_NAME = "PRODNAME_IG" 
 
-st.set_page_config(page_title="Price Check V15.1 - Direct Logic", layout="wide")
+st.set_page_config(page_title="Price Check", layout="wide")
 
 def clean_price_val(raw_str):
     """Membersihkan string harga menjadi integer murni."""
     if not raw_str: return 0
-    # Hapus semua karakter kecuali angka
     clean = re.sub(r'[^\d]', '', str(raw_str))
     return int(clean) if clean else 0
 
 def process_ocr_final(pil_image):
-    # 1. Image Preprocessing (Skala 2x & Grayscale)
+    # 1. Image Preprocessing (Skala 2x & Grayscale untuk akurasi OCR)
     img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
     scale = 2.0
     img_resized = cv2.resize(img_np, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
@@ -40,7 +39,7 @@ def process_ocr_final(pil_image):
     df_ocr = df_ocr[df_ocr['text'].str.strip() != ""]
     df_ocr['text'] = df_ocr['text'].str.upper()
 
-    # 3. Line Grouping
+    # 3. Line Grouping (Menyusun teks baris demi baris berdasarkan koordinat Y)
     df_ocr = df_ocr.sort_values(by=['top', 'left'])
     lines_data = []
     if not df_ocr.empty:
@@ -62,6 +61,7 @@ def process_ocr_final(pil_image):
         lines_data.append({"text": " ".join([w['text'] for w in temp_words]), "top": current_top, "h": 10})
 
     lines_txt = [l['text'] for l in lines_data]
+    full_text_single = " ".join(lines_txt)
     raw_ocr_output = "\n".join(lines_txt)
 
     # 4. Inisialisasi Variable
@@ -69,20 +69,15 @@ def process_ocr_final(pil_image):
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
     draw = ImageDraw.Draw(pil_image)
 
-    # --- INTERNAL HELPER: EXTRACTION LOGIC ---
-    def get_prices_from_area(area_text):
-        # Koreksi OCR umum (P=0, E=8, S=5, B=8, I=1)
-        c = area_text.replace('P', '0').replace('E', '8').replace('S', '5').replace('B', '8').replace('I', '1')
-        # Cari semua angka murni
-        found = re.findall(r'(\d[\d\.\,]{1,})', c)
-        return [clean_price_val(x) for x in found if clean_price_val(x) > 50]
-
-    # --- A. NAMA PRODUK & SENSOR ---
+    # --- A. NAMA PRODUK & SENSOR (Anchor: SEMUA KATEGORI) ---
     anchor_nav = "SEMUA KATEGORI ~ CARI DI KLIK INDOGROSIR"
     for i, line in enumerate(lines_txt):
         if fuzz.partial_ratio(anchor_nav, line) > 75:
+            # Sensor Putih pada baris header navigasi
             y, h = lines_data[i]['top'] / scale, lines_data[i]['h'] / scale
             draw.rectangle([0, y - 5, pil_image.width, y + h + 5], fill="white")
+            
+            # Ambil 1-2 baris setelahnya sebagai Nama Produk
             p_name_parts = []
             for j in range(i + 1, min(i + 3, len(lines_txt))):
                 if any(k in lines_txt[j] for k in ["PILIH", "SATUAN", "POTONGAN"]): break
@@ -90,47 +85,42 @@ def process_ocr_final(pil_image):
             prod_name = " ".join(p_name_parts).strip()
             break
 
-    # --- B. HARGA PCS (Logika: Unit s/d /) ---
-    for line in lines_txt:
-        # Cek apakah baris mengandung Unit PCS/RCG/BOX
-        found_unit = None
-        for u in ["PCS", "RCG", "BOX", "UNIT"]:
-            if u in line:
-                found_unit = u
-                break
-        
-        if found_unit:
-            # Ambil teks setelah Unit dan sebelum /
-            parts = line.split(found_unit)
-            if len(parts) > 1:
-                area_harga = parts[1].split("/")[0]
-                prices = get_prices_from_area(area_harga)
-                if len(prices) >= 2:
-                    res["PCS"]["n"], res["PCS"]["p"] = prices[-2], prices[-1]
-                elif len(prices) == 1:
-                    res["PCS"]["n"] = res["PCS"]["p"] = prices[0]
-            if res["PCS"]["n"] > 0: break # Berhenti jika sudah dapat
+    # --- B. HARGA PCS (Anchor Fleksibel s/d / atau ISI) ---
+    # Mendukung "PILIH SATUAN JUAL" atau "PILIH 7 SATUAN JUAL"
+    pcs_pattern = r"PILIH\s*\d*\s*SATUAN\s*JUAL"
+    if re.search(pcs_pattern, full_text_single):
+        after_unit = re.split(pcs_pattern, full_text_single)[1]
+        # Berhenti di simbol "/" atau kata "ISI"
+        m = re.search(r"(PCS|RCG|BOX)(.*?)[\/|ISI|BS]", after_unit)
+        if m:
+            p = re.findall(r"RP\s*([\d\-\.,%]+)", m.group(2))
+            if len(p) >= 2: res["PCS"]["n"], res["PCS"]["p"] = clean_price_val(p[0]), clean_price_val(p[1])
+            elif len(p) == 1: res["PCS"]["n"] = res["PCS"]["p"] = clean_price_val(p[0])
 
-    # --- C. HARGA CTN (Logika: CTN s/d /) ---
-    for line in lines_txt:
-        if "CTN" in line:
-            parts = line.split("CTN")
-            if len(parts) > 1:
-                area_harga = parts[1].split("/")[0]
-                prices = get_prices_from_area(area_harga)
-                if len(prices) >= 2:
-                    res["CTN"]["n"], res["CTN"]["p"] = prices[-2], prices[-1]
-                elif len(prices) == 1:
-                    res["CTN"]["n"] = res["CTN"]["p"] = prices[0]
-            if res["CTN"]["n"] > 0: break
+    # --- C. HARGA CTN (Anchor CTN s/d / atau ISI) ---
+    if "CTN" in full_text_single:
+        after_ctn = full_text_single.split("CTN")[1]
+        # Berhenti di simbol "/" atau kata "ISI"
+        ctn_m = re.search(r"(.*?)[\/|ISI]", after_ctn)
+        if ctn_m:
+            p_ctn = re.findall(r"RP\s*([\d\-\.,%]+)", ctn_m.group(1))
+            if len(p_ctn) >= 2: res["CTN"]["n"], res["CTN"]["p"] = clean_price_val(p_ctn[0]), clean_price_val(p_ctn[1])
+            elif len(p_ctn) == 1: res["CTN"]["n"] = res["CTN"]["p"] = clean_price_val(p_ctn[0])
 
-    # --- D. PROMOSI ---
+    # --- D. PROMOSI (2 Baris, Stop di "=", Hapus "RAP" & "|") ---
     anchor_promo = "MAU LEBIH UNTUNG? CEK MEKANISME PROMO BERIKUT"
     for i, line in enumerate(lines_txt):
         if anchor_promo in line:
-            promo_lines = [lines_txt[j] for j in range(i+1, min(i+3, len(lines_txt)))]
-            full_promo_txt = " ".join(promo_lines).split("=")[0].strip()
-            promo_clean = re.sub(r'\bRAP\b', '', full_promo_txt).replace("|", "").strip()
+            promo_lines = []
+            for j in range(i + 1, min(i + 3, len(lines_txt))):
+                promo_lines.append(lines_txt[j])
+            
+            full_promo_txt = " ".join(promo_lines)
+            promo_split = full_promo_txt.split("=")[0].strip()
+            # Bersihkan kata "RAP" dan simbol pipa "|"
+            promo_clean = re.sub(r'\bRAP\b', '', promo_split)
+            promo_clean = promo_clean.replace("|", "").strip()
+            # Buang karakter non-alfanumerik di awal kalimat
             promo_desc = re.sub(r'^[^A-Z0-9]+', '', promo_clean)
             break
 
@@ -140,7 +130,7 @@ def process_ocr_final(pil_image):
 def norm(val):
     return str(val).replace(".0", "").replace(" ", "").strip().upper()
 
-st.title("📸 Price Check V15.1 - Unit-to-Slash Stable")
+st.title("📸 Price Check V14.0 - Final Robust Version")
 
 col_a, col_b, col_c = st.columns(3)
 with col_a: m_code = st.text_input("📍 MASTER CODE").upper()
@@ -188,11 +178,8 @@ if files and m_code and date_inp and week_inp:
                     if match_code:
                         for s_name, df_t in db_targets.items():
                             df_t.columns = df_t.columns.astype(str).str.strip()
-                            # Normalisasi kolom untuk pencarian
-                            match_row = df_t[
-                                (df_t["PRODCODE"].astype(str).apply(norm) == match_code) & 
-                                (df_t["MASTER Code"].astype(str).apply(norm) == norm(m_code))
-                            ]
+                            match_row = df_t[(df_t["PRODCODE"].astype(str).apply(norm) == match_code) & 
+                                             (df_t["MASTER Code"].astype(str).apply(norm) == norm(m_code))]
                             
                             if not match_row.empty:
                                 final_list.append({
