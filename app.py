@@ -18,16 +18,15 @@ SHEETS_TARGET = ["DF", "HBHC"]
 SHEET_MASTER_IG = "IG" 
 COL_IG_NAME = "PRODNAME_IG" 
 
-st.set_page_config(page_title="Price Check V14.2 - Final", layout="wide")
+st.set_page_config(page_title="Price Check V14.3 - Stable", layout="wide")
 
 def clean_price_val(raw_str):
     """Membersihkan string harga dan mengambil angka murni."""
     if not raw_str: return 0
-    # Hanya ambil digit
     clean = re.sub(r'[^\d]', '', str(raw_str))
     return int(clean) if clean else 0
 
-def process_ocr_v14_2(pil_image):
+def process_ocr_v14_3(pil_image):
     # 1. Image Preprocessing
     img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
     scale = 2.0
@@ -69,7 +68,7 @@ def process_ocr_v14_2(pil_image):
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
     draw = ImageDraw.Draw(pil_image)
 
-    # --- A. NAMA PRODUK (Anchor: SEMUA KATEGORI) ---
+    # --- A. NAMA PRODUK ---
     anchor_nav = "SEMUA KATEGORI ~ CARI DI KLIK INDOGROSIR"
     for i, line in enumerate(lines_txt):
         if fuzz.partial_ratio(anchor_nav, line) > 75:
@@ -82,34 +81,31 @@ def process_ocr_v14_2(pil_image):
             prod_name = " ".join(p_parts).strip()
             break
 
-    # --- B. HARGA PCS (PILIH [X] SATUAN JUAL) ---
+    # --- B. HARGA PCS ---
     pcs_pattern = r"PILIH\s*\d*\s*SATUAN\s*JUAL"
     if re.search(pcs_pattern, full_text_single):
-        after_unit = re.split(pcs_pattern, full_text_single)[1]
-        m = re.search(r"(PCS|RCG|BOX)(.*?)[\/|ISI|\)]", after_unit)
-        if m:
-            area_harga = m.group(2)
-            # Bersihkan huruf P/B yang sering muncul di antara angka
-            area_clean = re.sub(r'(?<=\d)[P|B|R](?=\d)', '0', area_area) 
-            # Cari kelompok angka minimal 4 digit (format harga)
-            prices = re.findall(r'(\d[\d\.\,]{3,})', area_harga)
-            if len(prices) >= 2:
-                res["PCS"]["n"], res["PCS"]["p"] = clean_price_val(prices[-2]), clean_price_val(prices[-1])
-            elif len(prices) == 1:
-                res["PCS"]["n"] = res["PCS"]["p"] = clean_price_val(prices[0])
+        parts = re.split(pcs_pattern, full_text_single)
+        if len(parts) > 1:
+            after_unit = parts[1]
+            m = re.search(r"(PCS|RCG|BOX|RC)(.*?)[\/|ISI|\)]", after_unit)
+            if m:
+                area_harga = m.group(2)
+                # FIX: Ganti variabel area_area menjadi area_harga
+                area_clean = re.sub(r'(?<=\d)[P|B|R](?=\d)', '0', area_harga) 
+                prices = re.findall(r'(\d[\d\.\,]{3,})', area_clean)
+                if len(prices) >= 2:
+                    res["PCS"]["n"], res["PCS"]["p"] = clean_price_val(prices[-2]), clean_price_val(prices[-1])
+                elif len(prices) == 1:
+                    res["PCS"]["n"] = res["PCS"]["p"] = clean_price_val(prices[0])
 
-    # --- C. HARGA CTN (Handling kasus 2P477.689) ---
+    # --- C. HARGA CTN ---
     if "CTN" in full_text_single:
         after_ctn = full_text_single.split("CTN")[1]
         ctn_m = re.search(r"(.*?)[\/|ISI|\)]", after_ctn)
         if ctn_m:
             area_ctn = ctn_m.group(1)
-            # Ubah 'P' di tengah angka menjadi '0' (Kasus: 2P477 -> 20477)
-            area_ctn = re.sub(r'(?<=\d)P(?=\d)', '0', area_ctn)
-            # Cari semua kelompok angka (Ribuan)
-            prices_ctn = re.findall(r'(\d[\d\.\,]{3,})', area_ctn)
-            
-            # Ambil 2 angka TERAKHIR (Harga Normal & Promo biasanya paling kanan)
+            area_ctn_clean = re.sub(r'(?<=\d)P(?=\d)', '0', area_ctn)
+            prices_ctn = re.findall(r'(\d[\d\.\,]{3,})', area_ctn_clean)
             if len(prices_ctn) >= 2:
                 res["CTN"]["n"] = clean_price_val(prices_ctn[-2])
                 res["CTN"]["p"] = clean_price_val(prices_ctn[-1])
@@ -121,8 +117,8 @@ def process_ocr_v14_2(pil_image):
     for i, line in enumerate(lines_txt):
         if anchor_promo in line:
             p_lines = [lines_txt[j] for j in range(i + 1, min(i + 3, len(lines_txt)))]
-            promo_final = " ".join(p_lines).split("=")[0].strip()
-            promo_clean = re.sub(r'\bRAP\b', '', promo_final).replace("|", "").strip()
+            promo_split = " ".join(p_lines).split("=")[0].strip()
+            promo_clean = re.sub(r'\bRAP\b', '', promo_split).replace("|", "").strip()
             promo_desc = re.sub(r'^[^A-Z0-9]+', '', promo_clean)
             break
 
@@ -131,7 +127,7 @@ def process_ocr_v14_2(pil_image):
 # ================= UI STREAMLIT =================
 def norm(val): return str(val).replace(".0", "").replace(" ", "").strip().upper()
 
-st.title("📸 Price Check V14.2 - Advanced Price Recovery")
+st.title("📸 Price Check V14.3 - Stable Fix")
 
 c1, c2, c3 = st.columns(3)
 with c1: m_code = st.text_input("📍 MASTER CODE").upper()
@@ -151,7 +147,8 @@ if files and m_code and date_inp and week_inp:
             for f in files:
                 with st.container(border=True):
                     img_pil = Image.open(f)
-                    pcs, ctn, name, raw_txt, red_img, p_desc = process_ocr_v14_2(img_pil)
+                    # Memanggil fungsi V14.3
+                    pcs, ctn, name, raw_txt, red_img, p_desc = process_ocr_v14_3(img_pil)
                     
                     match_code, best_score = None, 0
                     for _, row in db_ig.iterrows():
@@ -169,8 +166,8 @@ if files and m_code and date_inp and week_inp:
                         st.code(raw_txt)
 
                     m1, m2, m3 = st.columns([1, 1, 2])
-                    m1.metric("UNIT", f"{pcs['n']:,} / {pcs['p']:,}")
-                    m2.metric("CTN", f"{ctn['n']:,} / {ctn['p']:,}")
+                    m1.metric("UNIT", f"Rp {pcs['n']:,} / {pcs['p']:,}")
+                    m2.metric("CTN", f"Rp {ctn['n']:,} / {ctn['p']:,}")
                     m3.success(f"Promo: {p_desc}")
 
                     if match_code:
@@ -206,3 +203,6 @@ if files and m_code and date_inp and week_inp:
                         if col_n in headers: ws.cell(row=row_num, column=headers.index(col_n)+1).value = val
                 wb.save(FILE_PATH)
                 st.success("EXCEL UPDATED!")
+                with open(FILE_PATH, "rb") as f:
+                    st.download_button("📥 DOWNLOAD REPORT", f, f"Report_{date_inp}.xlsx")
+            st.download_button("🖼️ DOWNLOAD ZIP FOTO", zip_buffer.getvalue(), f"Photos_{m_code}.zip")
