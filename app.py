@@ -27,7 +27,7 @@ def clean_price_val(raw_str):
     return int(clean) if clean else 0
 
 def process_ocr_final(pil_image):
-    # 1. Image Preprocessing (Skala 2x & Grayscale untuk akurasi OCR)
+    # 1. Image Preprocessing
     img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
     scale = 2.0
     img_resized = cv2.resize(img_np, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
@@ -64,7 +64,6 @@ def process_ocr_final(pil_image):
     full_text_single = " ".join(lines_txt)
     raw_ocr_output = "\n".join(lines_txt)
 
-    # 4. Inisialisasi Variable
     prod_name, promo_desc = "N/A", "-"
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
     draw = ImageDraw.Draw(pil_image)
@@ -109,7 +108,6 @@ def process_ocr_final(pil_image):
             promo_lines = []
             for j in range(i + 1, min(i + 3, len(lines_txt))):
                 promo_lines.append(lines_txt[j])
-            
             full_promo_txt = " ".join(promo_lines)
             promo_split = full_promo_txt.split("=")[0].strip()
             promo_clean = re.sub(r'\bRAP\b', '', promo_split)
@@ -127,8 +125,8 @@ st.title("📸 Price Check")
 
 col_a, col_b, col_c = st.columns(3)
 with col_a: m_code = st.text_input("📍 MASTER CODE").upper()
-with col_b: date_inp = st.text_input("📅 TANGGAL (Contoh: 20-OCT)").upper()
-with col_c: week_inp = st.text_input("🗓️ WEEK")
+with col_b: date_inp = st.text_input("📅 DAY (Contoh: 01JAN2026)").upper()
+with col_c: week_inp = st.text_input("🗓️ WEEK (Contoh: 1)")
 
 files = st.file_uploader("📂 UPLOAD SCREENSHOTS", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
@@ -145,7 +143,6 @@ if files and m_code and date_inp and week_inp:
                     img_pil = Image.open(f)
                     pcs, ctn, name, raw_txt, red_img, p_desc = process_ocr_final(img_pil)
                     
-                    # Fuzzy Match Name
                     match_code, best_score = None, 0
                     for _, row in db_ig.iterrows():
                         db_name = str(row[COL_IG_NAME]).upper()
@@ -153,17 +150,12 @@ if files and m_code and date_inp and week_inp:
                         if score > 70 and score > best_score:
                             best_score, match_code = score, norm(row["PRODCODE"])
                     
-                    # --- REVISED UI: NO PREVIEW & RAW TEXT ---
                     st.markdown(f"### 📄 {f.name}")
-                    
                     c1, c2 = st.columns([2, 1])
-                    with c1:
-                        st.markdown(f"**OCR Name:** `{name}`")
-                    with c2:
-                        if match_code:
-                            st.info(f"**Matched Code:** `{match_code}`")
-                        else:
-                            st.warning("⚠️ Code Not Found")
+                    with c1: st.markdown(f"**OCR Name:** `{name}`")
+                    with c2: 
+                        if match_code: st.info(f"**Matched Code:** `{match_code}`")
+                        else: st.warning("⚠️ Code Not Found")
 
                     m1, m2, m3 = st.columns([1, 1, 2])
                     m1.metric("UNIT (Normal/Promo)", f"{pcs['n']:,} / {pcs['p']:,}")
@@ -188,13 +180,12 @@ if files and m_code and date_inp and week_inp:
                                 break
                 gc.collect()
 
-        # --- ACTION BUTTONS ---
         if final_list:
             st.divider()
             col_btn1, col_btn2 = st.columns(2)
             
             with col_btn1:
-                if st.button("🚀 UPDATE DATABASE EXCEL", use_container_width=True):
+                if st.button("🚀 UPDATE DATABASE", use_container_width=True):
                     wb = load_workbook(FILE_PATH)
                     for r in final_list:
                         ws = wb[r['sheet']]
@@ -211,11 +202,16 @@ if files and m_code and date_inp and week_inp:
                             if col_name in headers:
                                 ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
                     wb.save(FILE_PATH)
-                    st.success("✅ DATABASE BERHASIL DIPERBARUI!")
+                    st.success("✅ DATABASE UPDATED!")
+                    
+                    # NAMA FILE EXCEL SESUAI PERMINTAAN
+                    excel_filename = f"Price Check W{week_inp}_{date_inp}.xlsx"
                     with open(FILE_PATH, "rb") as f:
-                        st.download_button("📥 DOWNLOAD HASIL UPDATE", f, f"Update_{date_inp}.xlsx", use_container_width=True)
+                        st.download_button("📥 DOWNLOAD EXCEL", f, excel_filename, use_container_width=True)
             
             with col_btn2:
-                st.download_button("🖼️ DOWNLOAD SEMUA FOTO (ZIP)", zip_buffer.getvalue(), f"Photos_{m_code}.zip", use_container_width=True)
+                # NAMA FILE ZIP SESUAI PERMINTAAN
+                zip_filename = f"{m_code}.zip"
+                st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), zip_filename, use_container_width=True)
     else:
         st.error(f"Database Excel tidak ditemukan di: {FILE_PATH}")
