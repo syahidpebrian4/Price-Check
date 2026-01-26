@@ -39,7 +39,7 @@ def process_ocr_final(pil_image):
     df_ocr = df_ocr[df_ocr['text'].str.strip() != ""]
     df_ocr['text'] = df_ocr['text'].str.upper()
 
-    # 3. Line Grouping (Menyusun teks baris demi baris berdasarkan koordinat Y)
+    # 3. Line Grouping
     df_ocr = df_ocr.sort_values(by=['top', 'left'])
     lines_data = []
     if not df_ocr.empty:
@@ -69,15 +69,13 @@ def process_ocr_final(pil_image):
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
     draw = ImageDraw.Draw(pil_image)
 
-    # --- A. NAMA PRODUK & SENSOR (Anchor: SEMUA KATEGORI) ---
+    # --- A. NAMA PRODUK & SENSOR ---
     anchor_nav = "SEMUA KATEGORI ~ CARI DI KLIK INDOGROSIR"
     for i, line in enumerate(lines_txt):
         if fuzz.partial_ratio(anchor_nav, line) > 75:
-            # Sensor Putih pada baris header navigasi
             y, h = lines_data[i]['top'] / scale, lines_data[i]['h'] / scale
             draw.rectangle([0, y - 5, pil_image.width, y + h + 5], fill="white")
             
-            # Ambil 1-2 baris setelahnya sebagai Nama Produk
             p_name_parts = []
             for j in range(i + 1, min(i + 3, len(lines_txt))):
                 if any(k in lines_txt[j] for k in ["PILIH", "SATUAN", "POTONGAN"]): break
@@ -85,29 +83,26 @@ def process_ocr_final(pil_image):
             prod_name = " ".join(p_name_parts).strip()
             break
 
-    # --- B. HARGA PCS (Anchor Fleksibel s/d / atau ISI) ---
-    # Mendukung "PILIH SATUAN JUAL" atau "PILIH 7 SATUAN JUAL"
+    # --- B. HARGA PCS ---
     pcs_pattern = r"PILIH\s*\d*\s*SATUAN\s*JUAL"
     if re.search(pcs_pattern, full_text_single):
         after_unit = re.split(pcs_pattern, full_text_single)[1]
-        # Berhenti di simbol "/" atau kata "ISI"
         m = re.search(r"(PCS|RCG|BOX)(.*?)[\/|ISI|BS]", after_unit)
         if m:
             p = re.findall(r"RP\s*([\d\-\.,%]+)", m.group(2))
             if len(p) >= 2: res["PCS"]["n"], res["PCS"]["p"] = clean_price_val(p[0]), clean_price_val(p[1])
             elif len(p) == 1: res["PCS"]["n"] = res["PCS"]["p"] = clean_price_val(p[0])
 
-    # --- C. HARGA CTN (Anchor CTN s/d / atau ISI) ---
+    # --- C. HARGA CTN ---
     if "CTN" in full_text_single:
         after_ctn = full_text_single.split("CTN")[1]
-        # Berhenti di simbol "/" atau kata "ISI"
         ctn_m = re.search(r"(.*?)[\/|ISI]", after_ctn)
         if ctn_m:
             p_ctn = re.findall(r"RP\s*([\d\-\.,%]+)", ctn_m.group(1))
             if len(p_ctn) >= 2: res["CTN"]["n"], res["CTN"]["p"] = clean_price_val(p_ctn[0]), clean_price_val(p_ctn[1])
             elif len(p_ctn) == 1: res["CTN"]["n"] = res["CTN"]["p"] = clean_price_val(p_ctn[0])
 
-    # --- D. PROMOSI (2 Baris, Stop di "=", Hapus "RAP" & "|") ---
+    # --- D. PROMOSI ---
     anchor_promo = "MAU LEBIH UNTUNG? CEK MEKANISME PROMO BERIKUT"
     for i, line in enumerate(lines_txt):
         if anchor_promo in line:
@@ -117,10 +112,8 @@ def process_ocr_final(pil_image):
             
             full_promo_txt = " ".join(promo_lines)
             promo_split = full_promo_txt.split("=")[0].strip()
-            # Bersihkan kata "RAP" dan simbol pipa "|"
             promo_clean = re.sub(r'\bRAP\b', '', promo_split)
             promo_clean = promo_clean.replace("|", "").strip()
-            # Buang karakter non-alfanumerik di awal kalimat
             promo_desc = re.sub(r'^[^A-Z0-9]+', '', promo_clean)
             break
 
@@ -134,7 +127,7 @@ st.title("📸 Price Check")
 
 col_a, col_b, col_c = st.columns(3)
 with col_a: m_code = st.text_input("📍 MASTER CODE").upper()
-with col_b: date_inp = st.text_input("📅 TANGGAL").upper()
+with col_b: date_inp = st.text_input("📅 TANGGAL (Contoh: 20-OCT)").upper()
 with col_c: week_inp = st.text_input("🗓️ WEEK")
 
 files = st.file_uploader("📂 UPLOAD SCREENSHOTS", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
@@ -160,15 +153,17 @@ if files and m_code and date_inp and week_inp:
                         if score > 70 and score > best_score:
                             best_score, match_code = score, norm(row["PRODCODE"])
                     
-                    st.subheader(f"🔍 Result: {f.name}")
-                    col_view, col_raw = st.columns([1, 1])
-                    with col_view:
-                        st.image(red_img, caption="Scan Preview")
-                        st.markdown(f"**Nama Produk:** `{name}`")
-                        st.markdown(f"**Prodcode:** `{match_code}`")
-                    with col_raw:
-                        st.caption("Raw OCR Monitor:")
-                        st.code(raw_txt, language="text")
+                    # --- REVISED UI: NO PREVIEW & RAW TEXT ---
+                    st.markdown(f"### 📄 {f.name}")
+                    
+                    c1, c2 = st.columns([2, 1])
+                    with c1:
+                        st.markdown(f"**OCR Name:** `{name}`")
+                    with c2:
+                        if match_code:
+                            st.info(f"**Matched Code:** `{match_code}`")
+                        else:
+                            st.warning("⚠️ Code Not Found")
 
                     m1, m2, m3 = st.columns([1, 1, 2])
                     m1.metric("UNIT (Normal/Promo)", f"{pcs['n']:,} / {pcs['p']:,}")
@@ -193,29 +188,34 @@ if files and m_code and date_inp and week_inp:
                                 break
                 gc.collect()
 
+        # --- ACTION BUTTONS ---
         if final_list:
             st.divider()
-            if st.button("🚀 UPDATE DATABASE"):
-                wb = load_workbook(FILE_PATH)
-                for r in final_list:
-                    ws = wb[r['sheet']]
-                    headers = [str(c.value).strip() for c in ws[1]]
-                    row_num = r['index'] + 2
-                    mapping = {
-                        "Normal Competitor Price (Pcs)": r['n_pcs'],
-                        "Promo Competitor Price (Pcs)": r['p_pcs'],
-                        "Normal Competitor Price (Ctn)": r['n_ctn'],
-                        "Promo Competitor Price (Ctn)": r['p_ctn'],
-                        "Promosi Competitor": r['p_desc']
-                    }
-                    for col_name, val in mapping.items():
-                        if col_name in headers:
-                            ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
-                wb.save(FILE_PATH)
-                st.success("DATABASE UPDATED!")
-                with open(FILE_PATH, "rb") as f:
-                    st.download_button("📥 DOWNLOAD EXCELL", f, f"Report_{date_inp}.xlsx")
-            st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"Photos_{m_code}.zip")
+            col_btn1, col_btn2 = st.columns(2)
+            
+            with col_btn1:
+                if st.button("🚀 UPDATE DATABASE EXCEL", use_container_width=True):
+                    wb = load_workbook(FILE_PATH)
+                    for r in final_list:
+                        ws = wb[r['sheet']]
+                        headers = [str(c.value).strip() for c in ws[1]]
+                        row_num = r['index'] + 2
+                        mapping = {
+                            "Normal Competitor Price (Pcs)": r['n_pcs'],
+                            "Promo Competitor Price (Pcs)": r['p_pcs'],
+                            "Normal Competitor Price (Ctn)": r['n_ctn'],
+                            "Promo Competitor Price (Ctn)": r['p_ctn'],
+                            "Promosi Competitor": r['p_desc']
+                        }
+                        for col_name, val in mapping.items():
+                            if col_name in headers:
+                                ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
+                    wb.save(FILE_PATH)
+                    st.success("✅ DATABASE BERHASIL DIPERBARUI!")
+                    with open(FILE_PATH, "rb") as f:
+                        st.download_button("📥 DOWNLOAD HASIL UPDATE", f, f"Update_{date_inp}.xlsx", use_container_width=True)
+            
+            with col_btn2:
+                st.download_button("🖼️ DOWNLOAD SEMUA FOTO (ZIP)", zip_buffer.getvalue(), f"Photos_{m_code}.zip", use_container_width=True)
     else:
         st.error(f"Database Excel tidak ditemukan di: {FILE_PATH}")
-
