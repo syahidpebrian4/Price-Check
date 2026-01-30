@@ -68,36 +68,34 @@ def process_ocr_final(pil_image, master_product_names=None):
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
     draw = ImageDraw.Draw(pil_image)
 
-    # --- A. NAMA PRODUK (LOGIKA LIST MASTER & FALLBACK) ---
-    found_via_master = False
-    if master_product_names:
-        best_match = "N/A"
-        highest_score = 0
-        for ref_name in master_product_names:
-            m_name = str(ref_name).upper()
-            # Mencari kemiripan nama produk di dalam seluruh teks OCR
-            score = fuzz.partial_ratio(m_name, full_text_single)
-            if score > 85 and score > highest_score:
-                highest_score = score
-                best_match = m_name
-        
-        if best_match != "N/A":
-            prod_name = best_match
-            found_via_master = True
-
-    # Fallback ke logika posisi jika tidak ketemu di list master
-    if not found_via_master:
-        anchor_nav = "SEMUA KATEGORI ~ CARI DI KLIK INDOGROSIR"
-        for i, line in enumerate(lines_txt):
-            if fuzz.partial_ratio(anchor_nav, line) > 75:
-                y, h = lines_data[i]['top'] / scale, lines_data[i]['h'] / scale
-                draw.rectangle([0, y - 5, pil_image.width, y + h + 5], fill="white")
+    # --- A. NAMA PRODUK & SENSOR (MENGGUNAKAN REDACT ASLI) ---
+    anchor_nav = "SEMUA KATEGORI ~ CARI DI KLIK INDOGROSIR"
+    for i, line in enumerate(lines_txt):
+        if fuzz.partial_ratio(anchor_nav, line) > 75:
+            # LOGIKA REDACT ASLI
+            y, h = lines_data[i]['top'] / scale, lines_data[i]['h'] / scale
+            draw.rectangle([0, y - 5, pil_image.width, y + h + 5], fill="white")
+            
+            # AMBIL NAMA PRODUK DENGAN MASTER LIST (JIKA ADA)
+            if master_product_names:
+                best_match = "N/A"
+                highest_score = 0
+                for ref_name in master_product_names:
+                    m_name = str(ref_name).upper()
+                    score = fuzz.partial_ratio(m_name, full_text_single)
+                    if score > 85 and score > highest_score:
+                        highest_score = score
+                        best_match = m_name
+                prod_name = best_match
+            
+            # FALLBACK KE LOGIKA POSISI ASLI JIKA MASTER LIST GAGAL
+            if prod_name == "N/A":
                 p_name_parts = []
                 for j in range(i + 1, min(i + 3, len(lines_txt))):
                     if any(k in lines_txt[j] for k in ["PILIH", "SATUAN", "POTONGAN"]): break
                     p_name_parts.append(lines_txt[j])
                 prod_name = " ".join(p_name_parts).strip()
-                break
+            break
 
     # --- B. HARGA PCS ---
     pcs_pattern = r"PILIH\s*\d*\s*SATUAN\s*JUAL"
@@ -149,11 +147,10 @@ files = st.file_uploader("📂 UPLOAD SCREENSHOTS", type=["jpg", "png", "jpeg"],
 
 if files and m_code and date_inp and week_inp:
     if os.path.exists(FILE_PATH):
-        # Load Database
         db_ig = pd.read_excel(FILE_PATH, sheet_name=SHEET_MASTER_IG)
         db_targets = {s: pd.read_excel(FILE_PATH, sheet_name=s) for s in SHEETS_TARGET}
         
-        # Ambil daftar nama produk unik dari database untuk pencarian Fuzzy
+        # Ambil daftar nama master untuk pencarian Fuzzy
         list_nama_master = db_ig[COL_IG_NAME].dropna().unique().tolist()
         
         final_list = []
@@ -163,7 +160,7 @@ if files and m_code and date_inp and week_inp:
             for f in files:
                 with st.container(border=True):
                     img_pil = Image.open(f)
-                    # Masukkan list_nama_master ke fungsi pemroses
+                    # Memanggil fungsi dengan Master List Nama
                     pcs, ctn, name, raw_txt, red_img, p_desc = process_ocr_final(img_pil, master_product_names=list_nama_master)
                     
                     match_code, best_score = None, 0
@@ -185,7 +182,7 @@ if files and m_code and date_inp and week_inp:
                     m2.metric("CTN (Normal/Promo)", f"{ctn['n']:,} / {ctn['p']:,}")
                     m3.success(f"**Promosi:** {p_desc}")
 
-                    # Expander untuk melihat hasil mentah OCR
+                    # TAMBAHAN: Expander untuk melihat pembacaan OCR utuh
                     with st.expander("🔍 Lihat Hasil Pembacaan OCR (Raw Text)"):
                         st.code(raw_txt)
 
@@ -230,7 +227,6 @@ if files and m_code and date_inp and week_inp:
                                 ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
                     wb.save(FILE_PATH)
                     st.success("✅ DATABASE UPDATED!")
-                    
                     excel_filename = f"Price Check W{week_inp}_{date_inp}.xlsx"
                     with open(FILE_PATH, "rb") as f:
                         st.download_button("📥 DOWNLOAD EXCEL", f, excel_filename, use_container_width=True)
