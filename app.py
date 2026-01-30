@@ -21,22 +21,25 @@ COL_IG_NAME = "PRODNAME_IG"
 st.set_page_config(page_title="Price Check", layout="wide")
 
 def clean_price_val(raw_str):
+    """Membersihkan string harga menjadi integer murni."""
     if not raw_str: return 0
     clean = re.sub(r'[^\d]', '', str(raw_str))
     return int(clean) if clean else 0
 
 def process_ocr_final(pil_image, master_product_names=None):
+    # 1. Image Preprocessing
     img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
     scale = 2.0
     img_resized = cv2.resize(img_np, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
     
+    # 2. OCR Execution
     d = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT, config=r'--oem 3 --psm 6')
     df_ocr = pd.DataFrame(d)
     df_ocr = df_ocr[df_ocr['text'].str.strip() != ""]
     df_ocr['text'] = df_ocr['text'].str.upper()
 
-    # Line Grouping
+    # 3. Line Grouping
     df_ocr = df_ocr.sort_values(by=['top', 'left'])
     lines_data = []
     if not df_ocr.empty:
@@ -65,7 +68,8 @@ def process_ocr_final(pil_image, master_product_names=None):
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
     draw = ImageDraw.Draw(pil_image)
 
-    # --- A. NAMA PRODUK (GLOBAL SEARCH) ---
+    # --- A. NAMA PRODUK (GLOBAL & POSITION) ---
+    # Cari di master list dulu
     if master_product_names:
         best_match = "N/A"
         highest_score = 0
@@ -78,50 +82,72 @@ def process_ocr_final(pil_image, master_product_names=None):
         prod_name = best_match
 
     # --- B. SENSOR (REDACT) ---
+    anchor_nav = "SEMUA KATEGORI"
     for i, line in enumerate(lines_txt):
-        if any(k in line for k in ["SEMUA", "KATEGORI", "CARI", "INDOGROSIR"]):
+        if fuzz.partial_ratio(anchor_nav, line) > 65:
             y_coord = lines_data[i]['top'] / scale
+            # Hanya sensor jika di area atas (navigasi)
             if y_coord < (pil_image.height * 0.3):
-                h_box = min(lines_data[i]['h'] / scale, 40) 
+                h_box = min(lines_data[i]['h'] / scale, 40)
                 draw.rectangle([0, y_coord - 5, pil_image.width, y_coord + h_box + 5], fill="white")
-                if "CARI" in line: break 
+                
+                # Fallback nama produk jika master list gagal
+                if prod_name == "N/A":
+                    p_name_parts = []
+                    for j in range(i + 1, min(i + 4, len(lines_txt))):
+                        if any(k in lines_txt[j] for k in ["PILIH", "SATUAN", "HARGA", "RP"]): break
+                        p_name_parts.append(lines_txt[j])
+                    prod_name = " ".join(p_name_parts).strip()
+                break
 
-    # --- C. SMART PRICE DETECTION ---
+    # --- C. HARGA PCS / RCG / PCH / PCK ---
     def get_prices(text_segment):
         found = re.findall(r"(?:RP|R9|BP|RD|P)?\s?([\d\.,]{4,9})", text_segment)
-        valid_prices = []
+        valid = []
         for f in found:
             val = clean_price_val(f)
-            if 500 < val < 2000000:
-                valid_prices.append(val)
-        return valid_prices
+            if 500 < val < 2000000: valid.append(val)
+        return valid
 
-    parts_unit = re.split(r"(PCS|RCG|PCH|PCK|SATUAN JUAL|TERMURAH)", full_text_single)
-    if len(parts_unit) > 1:
-        prices = get_prices(" ".join(parts_unit[1:]))
+    # Gunakan logika split berdasarkan satuan
+    pcs_area = re.split(r"(PILIH SATUAN|TERMURAH|PCS|RCG|PCH|PCK)", full_text_single)
+    if len(pcs_area) > 1:
+        prices = get_prices(" ".join(pcs_area[1:]))
         if len(prices) >= 2:
             res["PCS"]["n"], res["PCS"]["p"] = max(prices[:2]), min(prices[:2])
         elif len(prices) == 1:
             res["PCS"]["n"] = res["PCS"]["p"] = prices[0]
 
+    # --- D. HARGA CTN ---
     if "CTN" in full_text_single:
-        ctn_parts = full_text_single.split("CTN")[-1]
-        prices_ctn = get_prices(ctn_parts)
+        ctn_part = full_text_single.split("CTN")[-1]
+        prices_ctn = get_prices(ctn_part)
         if prices_ctn:
             res["CTN"]["n"] = res["CTN"]["p"] = prices_ctn[0]
 
-    # --- D. PROMOSI ---
-    promo_match = re.search(r"(BELI\s\d+\sGRATIS\s\d+|MIN\.\sBELI\s\d+)", full_text_single)
-    if promo_match:
-        promo_desc = promo_match.group(0)
+    # --- E. LOGIKA PROMOSI (SESUAI REQUEST) ---
+    anchor_promo = "MAU LEBIH UNTUNG? CEK MEKANISME PROMO BERIKUT"
+    for i, line in enumerate(lines_txt):
+        if anchor_promo in line:
+            promo_lines = []
+            for j in range(i + 1, min(i + 3, len(lines_txt))):
+                promo_lines.append(lines_txt[j])
+            full_promo_txt = " ".join(promo_lines)
+            promo_split = full_promo_txt.split("=")[0].strip()
+            promo_clean = re.sub(r'\bRAP\b', '', promo_split).replace("|", "").strip()
+            promo_desc = re.sub(r'^[^A-Z0-9]+', '', promo_clean)
+            break
+    
+    # Fallback promo jika anchor tidak ketemu (cari BELI/GRATIS)
+    if promo_desc == "-":
+        m_promo = re.search(r"(BELI\s\d+\sGRATIS\s\d+|MIN\.\sBELI\s\d+)", full_text_single)
+        if m_promo: promo_desc = m_promo.group(0)
 
     return res["PCS"], res["CTN"], prod_name, raw_ocr_output, pil_image, promo_desc
 
 # ================= UI STREAMLIT =================
 def norm(val):
     return str(val).replace(".0", "").replace(" ", "").strip().upper()
-
-st.title("📸 Price Check")
 
 col_a, col_b, col_c = st.columns(3)
 with col_a: m_code = st.text_input("📍 MASTER CODE").upper()
@@ -143,10 +169,9 @@ if files and m_code and date_inp and week_inp:
             for f in files:
                 with st.container(border=True):
                     img_pil = Image.open(f)
-                    pcs, ctn, name, raw_txt, red_img, p_desc = process_ocr_final(img_pil, master_product_names=list_nama_master)
+                    pcs, ctn, name, raw_txt, red_img, p_desc = process_ocr_final(img_pil, list_nama_master)
                     
-                    match_code = None
-                    best_score = 0
+                    match_code, best_score = None, 0
                     for _, row in db_ig.iterrows():
                         db_name = str(row[COL_IG_NAME]).upper()
                         score = fuzz.partial_ratio(db_name, name)
@@ -164,9 +189,6 @@ if files and m_code and date_inp and week_inp:
                     m1.metric("UNIT", f"{pcs['n']:,} / {pcs['p']:,}")
                     m2.metric("CTN", f"{ctn['n']:,} / {ctn['p']:,}")
                     m3.success(f"**Promo:** {p_desc}")
-
-                    with st.expander("🔍 Raw OCR"):
-                        st.code(raw_txt)
 
                     if match_code:
                         for s_name, df_t in db_targets.items():
@@ -194,7 +216,7 @@ if files and m_code and date_inp and week_inp:
                     wb = load_workbook(FILE_PATH)
                     for r in final_list:
                         ws = wb[r['sheet']]
-                        headers = [str(col.value).strip() for col in ws[1]]
+                        headers = [str(c.value).strip() for c in ws[1]]
                         row_num = r['index'] + 2
                         mapping = {
                             "Normal Competitor Price (Pcs)": r['n_pcs'],
@@ -207,7 +229,10 @@ if files and m_code and date_inp and week_inp:
                             if col_name in headers:
                                 ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
                     wb.save(FILE_PATH)
-                    st.success("✅ UPDATED")
+                    st.success("✅ DATABASE UPDATED!")
+                    excel_filename = f"Price Check W{week_inp}_{date_inp}.xlsx"
+                    with open(FILE_PATH, "rb") as f:
+                        st.download_button("📥 DOWNLOAD EXCEL", f, excel_filename, use_container_width=True)
             with col_btn2:
                 st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"{m_code}.zip", use_container_width=True)
     else:
