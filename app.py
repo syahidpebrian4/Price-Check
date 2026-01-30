@@ -19,7 +19,7 @@ SHEETS_TARGET = ["DF", "HBHC"]
 SHEET_MASTER_IG = "IG" 
 COL_IG_NAME = "PRODNAME_IG" 
 
-st.set_page_config(page_title="Lotte Price Check", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Price Check", layout="wide", initial_sidebar_state="expanded")
 
 # --- FUNGSI HELPER: LOGO BASE64 ---
 def get_base64_image(image_path):
@@ -28,7 +28,7 @@ def get_base64_image(image_path):
             return base64.b64encode(img_file.read()).decode()
     return None
 
-# --- CSS CUSTOM: FIXED HEADER & PERMANENT SIDEBAR ---
+# --- CSS CUSTOM: FIXED HEADER & SIDEBAR MERAH PERMANEN ---
 logo_b64 = get_base64_image("lotte_logo.png")
 
 st.markdown(f"""
@@ -59,34 +59,33 @@ st.markdown(f"""
             margin: 0;
         }}
 
-        /* 2. Sidebar Merah Permanen (Menghilangkan tombol tutup) */
+        /* 2. Sidebar Merah Permanen (Tidak bisa ditutup) */
         [data-testid="stSidebar"] {{
             background-color: #FF0000 !important;
             margin-top: 90px !important;
-            min-width: 300px !important;
-            max-width: 300px !important;
+            min-width: 320px !important;
+            max-width: 320px !important;
         }}
         
-        /* Menyembunyikan tombol 'X' (tutup sidebar) */
+        /* Sembunyikan tombol toggle/tutup sidebar */
         [data-testid="stSidebarNav"] + div, button[kind="headerNoSpacing"] {{
             display: none !important;
         }}
 
-        /* 3. Teks Sidebar Putih */
+        /* 3. Teks & Input Sidebar agar Putih */
         [data-testid="stSidebar"] .stMarkdown p, 
         [data-testid="stSidebar"] label {{
             color: white !important;
             font-weight: bold !important;
             font-size: 14px;
         }}
-
-        /* 4. Padding Konten Utama */
+        
+        /* 4. Padding Area Utama agar tidak tertutup header */
         .main .block-container {{
             padding-top: 130px !important;
-            margin-left: 20px;
         }}
 
-        /* 5. Sembunyikan Header Streamlit Bawaan */
+        /* 5. Sembunyikan Header bawaan Streamlit */
         header {{visibility: hidden;}}
     </style>
     
@@ -96,7 +95,7 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-# --- FUNGSI LOGIKA OCR ---
+# --- FUNGSI LOGIKA OCR (SESUAI REQUEST ANDA) ---
 def clean_price_val(raw_str):
     if not raw_str: return 0
     clean = re.sub(r'[^\d]', '', str(raw_str))
@@ -121,12 +120,17 @@ def process_ocr_final(pil_image, master_product_names=None):
         for _, row in df_ocr.iterrows():
             if row['top'] - current_top > 15:
                 temp_words.sort(key=lambda x: x['left'])
-                lines_data.append({"text": " ".join([w['text'] for w in temp_words]), "top": current_top})
-                temp_words = [{'text': row['text'], 'left': row['left']}]
+                lines_data.append({
+                    "text": " ".join([w['text'] for w in temp_words]),
+                    "top": current_top,
+                    "h": max([w['height'] for w in temp_words])
+                })
+                temp_words = [{'text': row['text'], 'left': row['left'], 'height': row['height']}]
                 current_top = row['top']
             else:
-                temp_words.append({'text': row['text'], 'left': row['left']})
-        lines_data.append({"text": " ".join([w['text'] for w in sorted(temp_words, key=lambda x: x['left'])]), "top": current_top})
+                temp_words.append({'text': row['text'], 'left': row['left'], 'height': row['height']})
+        temp_words.sort(key=lambda x: x['left'])
+        lines_data.append({"text": " ".join([w['text'] for w in temp_words]), "top": current_top, "h": 10})
 
     lines_txt = [l['text'] for l in lines_data]
     full_text_single = " ".join(lines_txt)
@@ -136,7 +140,6 @@ def process_ocr_final(pil_image, master_product_names=None):
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
     draw = ImageDraw.Draw(pil_image)
 
-    # A. Nama Produk
     if master_product_names:
         best_match, highest_score = "N/A", 0
         for ref_name in master_product_names:
@@ -145,7 +148,15 @@ def process_ocr_final(pil_image, master_product_names=None):
                 highest_score, best_match = score, str(ref_name).upper()
         prod_name = best_match
 
-    # B. Price Detection
+    anchor_nav = "SEMUA KATEGORI"
+    for i, line in enumerate(lines_txt):
+        if fuzz.partial_ratio(anchor_nav, line) > 65:
+            y_coord = lines_data[i]['top'] / scale
+            if y_coord < (pil_image.height * 0.3):
+                h_box = min(lines_data[i]['h'] / scale, 40)
+                draw.rectangle([0, y_coord - 5, pil_image.width, y_coord + h_box + 5], fill="white")
+                break
+
     def get_prices(text_segment):
         found = re.findall(r"(?:RP|R9|BP|RD|P)?\s?([\d\.,]{4,9})", text_segment)
         return [clean_price_val(f) for f in found if 500 < clean_price_val(f) < 2000000]
@@ -160,18 +171,25 @@ def process_ocr_final(pil_image, master_product_names=None):
         prices_ctn = get_prices(full_text_single.split("CTN")[-1])
         if prices_ctn: res["CTN"]["n"] = res["CTN"]["p"] = prices_ctn[0]
 
-    # C. Promo
-    m_promo = re.search(r"(BELI\s\d+\sGRATIS\s\d+|MIN\.\sBELI\s\d+)", full_text_single)
-    if m_promo: promo_desc = m_promo.group(0)
+    anchor_promo = "MAU LEBIH UNTUNG? CEK MEKANISME PROMO BERIKUT"
+    for i, line in enumerate(lines_txt):
+        if anchor_promo in line:
+            promo_lines = [lines_txt[j] for j in range(i + 1, min(i + 3, len(lines_txt)))]
+            promo_desc = " ".join(promo_lines).split("=")[0].strip()
+            break
+    
+    if promo_desc == "-":
+        m_promo = re.search(r"(BELI\s\d+\sGRATIS\s\d+|MIN\.\sBELI\s\d+)", full_text_single)
+        if m_promo: promo_desc = m_promo.group(0)
 
     return res["PCS"], res["CTN"], prod_name, raw_ocr_output, pil_image, promo_desc
 
-# ================= UI RENDERING =================
+# ================= UI SIDEBAR & CONTENT =================
 
 def norm(val):
     return str(val).replace(".0", "").replace(" ", "").strip().upper()
 
-# Sidebar Merah (Fixed Permanen)
+# Sidebar Merah Fixed
 with st.sidebar:
     st.write("---")
     m_code = st.text_input("📍 MASTER CODE", value="6002").upper()
@@ -179,7 +197,7 @@ with st.sidebar:
     week_inp = st.text_input("🗓️ WEEK", value="2")
     st.write("---")
 
-# Area Utama
+# Konten Utama
 st.markdown("### 📂 UPLOAD SCREENSHOTS")
 files = st.file_uploader("", type=["jpg", "png", "jpeg"], accept_multiple_files=True, label_visibility="collapsed")
 
@@ -207,7 +225,7 @@ if files and m_code and date_inp and week_inp:
                     c1, c2, c3 = st.columns([1, 1, 2])
                     c1.metric("PCS (N/P)", f"{pcs['n']:,} / {pcs['p']:,}")
                     c2.metric("CTN", f"{ctn['n']:,}")
-                    c3.success(f"Code: {match_code if match_code else 'N/A'}")
+                    c3.success(f"Promo: {p_desc}")
 
                     if match_code:
                         for s_name, df_t in db_targets.items():
@@ -241,6 +259,7 @@ if files and m_code and date_inp and week_inp:
                             "Normal Competitor Price (Pcs)": empty_if_zero(r['n_pcs']),
                             "Promo Competitor Price (Pcs)": empty_if_zero(r['p_pcs']),
                             "Normal Competitor Price (Ctn)": empty_if_zero(r['n_ctn']),
+                            "Promo Competitor Price (Ctn)": empty_if_zero(r['p_ctn']),
                             "Promosi Competitor": r['p_desc'] if r['p_desc'] != "-" else None
                         }
                         for col_name, val in mapping.items():
@@ -252,6 +271,6 @@ if files and m_code and date_inp and week_inp:
                     with open(FILE_PATH, "rb") as f_excel:
                         st.download_button("📥 DOWNLOAD EXCEL", f_excel, f"Update_{date_inp}.xlsx", use_container_width=True)
             with col_btn2:
-                st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"Photos_{m_code}.zip", use_container_width=True)
+                st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"{m_code}.zip", use_container_width=True)
     else:
         st.error("Database Excel tidak ditemukan!")
