@@ -19,7 +19,7 @@ SHEETS_TARGET = ["DF", "HBHC"]
 SHEET_MASTER_IG = "IG" 
 COL_IG_NAME = "PRODNAME_IG" 
 
-st.set_page_config(page_title="Lotte Price Check", layout="wide")
+st.set_page_config(page_title="Lotte Price Check", layout="wide", initial_sidebar_state="expanded")
 
 # --- FUNGSI HELPER: LOGO BASE64 ---
 def get_base64_image(image_path):
@@ -28,7 +28,7 @@ def get_base64_image(image_path):
             return base64.b64encode(img_file.read()).decode()
     return None
 
-# --- CSS CUSTOM: FIXED HEADER & SIDEBAR MERAH ---
+# --- CSS CUSTOM: FIXED HEADER & PERMANENT SIDEBAR ---
 logo_b64 = get_base64_image("lotte_logo.png")
 
 st.markdown(f"""
@@ -59,12 +59,19 @@ st.markdown(f"""
             margin: 0;
         }}
 
-        /* 2. Sidebar Merah di bawah Header */
+        /* 2. Sidebar Merah Permanen (Menghilangkan tombol tutup) */
         [data-testid="stSidebar"] {{
             background-color: #FF0000 !important;
             margin-top: 90px !important;
+            min-width: 300px !important;
+            max-width: 300px !important;
         }}
         
+        /* Menyembunyikan tombol 'X' (tutup sidebar) */
+        [data-testid="stSidebarNav"] + div, button[kind="headerNoSpacing"] {{
+            display: none !important;
+        }}
+
         /* 3. Teks Sidebar Putih */
         [data-testid="stSidebar"] .stMarkdown p, 
         [data-testid="stSidebar"] label {{
@@ -76,9 +83,10 @@ st.markdown(f"""
         /* 4. Padding Konten Utama */
         .main .block-container {{
             padding-top: 130px !important;
+            margin-left: 20px;
         }}
 
-        /* 5. Sembunyikan Header Streamlit */
+        /* 5. Sembunyikan Header Streamlit Bawaan */
         header {{visibility: hidden;}}
     </style>
     
@@ -113,17 +121,12 @@ def process_ocr_final(pil_image, master_product_names=None):
         for _, row in df_ocr.iterrows():
             if row['top'] - current_top > 15:
                 temp_words.sort(key=lambda x: x['left'])
-                lines_data.append({
-                    "text": " ".join([w['text'] for w in temp_words]),
-                    "top": current_top,
-                    "h": max([w['height'] for w in temp_words])
-                })
-                temp_words = [{'text': row['text'], 'left': row['left'], 'height': row['height']}]
+                lines_data.append({"text": " ".join([w['text'] for w in temp_words]), "top": current_top})
+                temp_words = [{'text': row['text'], 'left': row['left']}]
                 current_top = row['top']
             else:
-                temp_words.append({'text': row['text'], 'left': row['left'], 'height': row['height']})
-        temp_words.sort(key=lambda x: x['left'])
-        lines_data.append({"text": " ".join([w['text'] for w in temp_words]), "top": current_top, "h": 10})
+                temp_words.append({'text': row['text'], 'left': row['left']})
+        lines_data.append({"text": " ".join([w['text'] for w in sorted(temp_words, key=lambda x: x['left'])]), "top": current_top})
 
     lines_txt = [l['text'] for l in lines_data]
     full_text_single = " ".join(lines_txt)
@@ -142,16 +145,7 @@ def process_ocr_final(pil_image, master_product_names=None):
                 highest_score, best_match = score, str(ref_name).upper()
         prod_name = best_match
 
-    # B. Sensor (Redact)
-    anchor_nav = "SEMUA KATEGORI"
-    for i, line in enumerate(lines_txt):
-        if fuzz.partial_ratio(anchor_nav, line) > 65:
-            y_coord = lines_data[i]['top'] / scale
-            if y_coord < (pil_image.height * 0.3):
-                draw.rectangle([0, y_coord - 5, pil_image.width, y_coord + 35], fill="white")
-                break
-
-    # C. Price Detection
+    # B. Price Detection
     def get_prices(text_segment):
         found = re.findall(r"(?:RP|R9|BP|RD|P)?\s?([\d\.,]{4,9})", text_segment)
         return [clean_price_val(f) for f in found if 500 < clean_price_val(f) < 2000000]
@@ -166,12 +160,9 @@ def process_ocr_final(pil_image, master_product_names=None):
         prices_ctn = get_prices(full_text_single.split("CTN")[-1])
         if prices_ctn: res["CTN"]["n"] = res["CTN"]["p"] = prices_ctn[0]
 
-    # D. Promo
-    if "MAU LEBIH UNTUNG" in full_text_single:
-        promo_desc = "CEK MEKANISME"
-    else:
-        m_promo = re.search(r"(BELI\s\d+\sGRATIS\s\d+|MIN\.\sBELI\s\d+)", full_text_single)
-        if m_promo: promo_desc = m_promo.group(0)
+    # C. Promo
+    m_promo = re.search(r"(BELI\s\d+\sGRATIS\s\d+|MIN\.\sBELI\s\d+)", full_text_single)
+    if m_promo: promo_desc = m_promo.group(0)
 
     return res["PCS"], res["CTN"], prod_name, raw_ocr_output, pil_image, promo_desc
 
@@ -180,12 +171,12 @@ def process_ocr_final(pil_image, master_product_names=None):
 def norm(val):
     return str(val).replace(".0", "").replace(" ", "").strip().upper()
 
-# Sidebar Merah
+# Sidebar Merah (Fixed Permanen)
 with st.sidebar:
     st.write("---")
-    m_code = st.text_input("📍 MASTER CODE", placeholder="6002").upper()
-    date_inp = st.text_input("📅 DAY", placeholder="22JAN2026").upper()
-    week_inp = st.text_input("🗓️ WEEK", placeholder="2")
+    m_code = st.text_input("📍 MASTER CODE", value="6002").upper()
+    date_inp = st.text_input("📅 DAY", value="22JAN2026").upper()
+    week_inp = st.text_input("🗓️ WEEK", value="2")
     st.write("---")
 
 # Area Utama
@@ -259,7 +250,7 @@ if files and m_code and date_inp and week_inp:
                     wb.save(FILE_PATH)
                     st.success("✅ DATABASE UPDATED!")
                     with open(FILE_PATH, "rb") as f_excel:
-                        st.download_button("📥 DOWNLOAD EXCEL", f_excel, f"Price_Check_{date_inp}.xlsx", use_container_width=True)
+                        st.download_button("📥 DOWNLOAD EXCEL", f_excel, f"Update_{date_inp}.xlsx", use_container_width=True)
             with col_btn2:
                 st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"Photos_{m_code}.zip", use_container_width=True)
     else:
