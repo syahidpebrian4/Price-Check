@@ -68,8 +68,7 @@ def process_ocr_final(pil_image, master_product_names=None):
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
     draw = ImageDraw.Draw(pil_image)
 
-    # --- A. NAMA PRODUK (GLOBAL & POSITION) ---
-    # Cari di master list dulu
+    # --- A. NAMA PRODUK (GLOBAL SEARCH) ---
     if master_product_names:
         best_match = "N/A"
         highest_score = 0
@@ -86,12 +85,10 @@ def process_ocr_final(pil_image, master_product_names=None):
     for i, line in enumerate(lines_txt):
         if fuzz.partial_ratio(anchor_nav, line) > 65:
             y_coord = lines_data[i]['top'] / scale
-            # Hanya sensor jika di area atas (navigasi)
             if y_coord < (pil_image.height * 0.3):
                 h_box = min(lines_data[i]['h'] / scale, 40)
                 draw.rectangle([0, y_coord - 5, pil_image.width, y_coord + h_box + 5], fill="white")
                 
-                # Fallback nama produk jika master list gagal
                 if prod_name == "N/A":
                     p_name_parts = []
                     for j in range(i + 1, min(i + 4, len(lines_txt))):
@@ -100,7 +97,7 @@ def process_ocr_final(pil_image, master_product_names=None):
                     prod_name = " ".join(p_name_parts).strip()
                 break
 
-    # --- C. HARGA PCS / RCG / PCH / PCK ---
+    # --- C. SMART PRICE DETECTION ---
     def get_prices(text_segment):
         found = re.findall(r"(?:RP|R9|BP|RD|P)?\s?([\d\.,]{4,9})", text_segment)
         valid = []
@@ -109,7 +106,6 @@ def process_ocr_final(pil_image, master_product_names=None):
             if 500 < val < 2000000: valid.append(val)
         return valid
 
-    # Gunakan logika split berdasarkan satuan
     pcs_area = re.split(r"(PILIH SATUAN|TERMURAH|PCS|RCG|PCH|PCK)", full_text_single)
     if len(pcs_area) > 1:
         prices = get_prices(" ".join(pcs_area[1:]))
@@ -118,14 +114,13 @@ def process_ocr_final(pil_image, master_product_names=None):
         elif len(prices) == 1:
             res["PCS"]["n"] = res["PCS"]["p"] = prices[0]
 
-    # --- D. HARGA CTN ---
     if "CTN" in full_text_single:
         ctn_part = full_text_single.split("CTN")[-1]
         prices_ctn = get_prices(ctn_part)
         if prices_ctn:
             res["CTN"]["n"] = res["CTN"]["p"] = prices_ctn[0]
 
-    # --- E. LOGIKA PROMOSI (SESUAI REQUEST) ---
+    # --- D. PROMOSI ---
     anchor_promo = "MAU LEBIH UNTUNG? CEK MEKANISME PROMO BERIKUT"
     for i, line in enumerate(lines_txt):
         if anchor_promo in line:
@@ -138,7 +133,6 @@ def process_ocr_final(pil_image, master_product_names=None):
             promo_desc = re.sub(r'^[^A-Z0-9]+', '', promo_clean)
             break
     
-    # Fallback promo jika anchor tidak ketemu (cari BELI/GRATIS)
     if promo_desc == "-":
         m_promo = re.search(r"(BELI\s\d+\sGRATIS\s\d+|MIN\.\sBELI\s\d+)", full_text_single)
         if m_promo: promo_desc = m_promo.group(0)
@@ -218,18 +212,25 @@ if files and m_code and date_inp and week_inp:
                         ws = wb[r['sheet']]
                         headers = [str(c.value).strip() for c in ws[1]]
                         row_num = r['index'] + 2
+                        
+                        # --- LOGIKA BARU: Jika 0 maka None (Kosong di Excel) ---
+                        def empty_if_zero(val):
+                            return val if val != 0 else None
+
                         mapping = {
-                            "Normal Competitor Price (Pcs)": r['n_pcs'],
-                            "Promo Competitor Price (Pcs)": r['p_pcs'],
-                            "Normal Competitor Price (Ctn)": r['n_ctn'],
-                            "Promo Competitor Price (Ctn)": r['p_ctn'],
-                            "Promosi Competitor": r['p_desc']
+                            "Normal Competitor Price (Pcs)": empty_if_zero(r['n_pcs']),
+                            "Promo Competitor Price (Pcs)": empty_if_zero(r['p_pcs']),
+                            "Normal Competitor Price (Ctn)": empty_if_zero(r['n_ctn']),
+                            "Promo Competitor Price (Ctn)": empty_if_zero(r['p_ctn']),
+                            "Promosi Competitor": r['p_desc'] if r['p_desc'] != "-" else None
                         }
+                        
                         for col_name, val in mapping.items():
                             if col_name in headers:
                                 ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
+                    
                     wb.save(FILE_PATH)
-                    st.success("✅ DATABASE UPDATED!")
+                    st.success("✅ DATABASE UPDATED (Zero values cleared)!")
                     excel_filename = f"Price Check W{week_inp}_{date_inp}.xlsx"
                     with open(FILE_PATH, "rb") as f:
                         st.download_button("📥 DOWNLOAD EXCEL", f, excel_filename, use_container_width=True)
