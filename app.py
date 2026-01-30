@@ -19,6 +19,7 @@ SHEETS_TARGET = ["DF", "HBHC"]
 SHEET_MASTER_IG = "IG" 
 COL_IG_NAME = "PRODNAME_IG" 
 
+# Set page agar sidebar default terbuka
 st.set_page_config(page_title="Price Check", layout="wide", initial_sidebar_state="expanded")
 
 # --- FUNGSI HELPER: LOGO BASE64 ---
@@ -59,7 +60,7 @@ st.markdown(f"""
             margin: 0;
         }}
 
-        /* 2. Sidebar Merah Permanen (Tidak bisa ditutup) */
+        /* 2. Sidebar Merah Permanen (Menghilangkan Tombol Tutup) */
         [data-testid="stSidebar"] {{
             background-color: #FF0000 !important;
             margin-top: 90px !important;
@@ -67,12 +68,12 @@ st.markdown(f"""
             max-width: 320px !important;
         }}
         
-        /* Sembunyikan tombol toggle/tutup sidebar */
+        /* Force sidebar agar tidak bisa di-collapse (disembunyikan) */
         [data-testid="stSidebarNav"] + div, button[kind="headerNoSpacing"] {{
             display: none !important;
         }}
 
-        /* 3. Teks & Input Sidebar agar Putih */
+        /* 3. Teks Sidebar Putih & Input Styling */
         [data-testid="stSidebar"] .stMarkdown p, 
         [data-testid="stSidebar"] label {{
             color: white !important;
@@ -80,12 +81,12 @@ st.markdown(f"""
             font-size: 14px;
         }}
         
-        /* 4. Padding Area Utama agar tidak tertutup header */
+        /* 4. Padding Area Utama agar konten tidak tertimbun header */
         .main .block-container {{
             padding-top: 130px !important;
         }}
 
-        /* 5. Sembunyikan Header bawaan Streamlit */
+        /* 5. Sembunyikan Header Bawaan Streamlit */
         header {{visibility: hidden;}}
     </style>
     
@@ -95,23 +96,27 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-# --- FUNGSI LOGIKA OCR (SESUAI REQUEST ANDA) ---
+# --- FUNGSI LOGIKA OCR LENGKAP ---
 def clean_price_val(raw_str):
+    """Membersihkan string harga menjadi integer murni."""
     if not raw_str: return 0
     clean = re.sub(r'[^\d]', '', str(raw_str))
     return int(clean) if clean else 0
 
 def process_ocr_final(pil_image, master_product_names=None):
+    # 1. Image Preprocessing
     img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
     scale = 2.0
     img_resized = cv2.resize(img_np, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
     
+    # 2. OCR Execution
     d = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT, config=r'--oem 3 --psm 6')
     df_ocr = pd.DataFrame(d)
     df_ocr = df_ocr[df_ocr['text'].str.strip() != ""]
     df_ocr['text'] = df_ocr['text'].str.upper()
 
+    # 3. Line Grouping
     df_ocr = df_ocr.sort_values(by=['top', 'left'])
     lines_data = []
     if not df_ocr.empty:
@@ -140,14 +145,19 @@ def process_ocr_final(pil_image, master_product_names=None):
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
     draw = ImageDraw.Draw(pil_image)
 
+    # --- A. NAMA PRODUK (GLOBAL SEARCH) ---
     if master_product_names:
-        best_match, highest_score = "N/A", 0
+        best_match = "N/A"
+        highest_score = 0
         for ref_name in master_product_names:
-            score = fuzz.partial_ratio(str(ref_name).upper(), full_text_single)
+            m_name = str(ref_name).upper()
+            score = fuzz.partial_ratio(m_name, full_text_single)
             if score > 80 and score > highest_score:
-                highest_score, best_match = score, str(ref_name).upper()
+                highest_score = score
+                best_match = m_name
         prod_name = best_match
 
+    # --- B. SENSOR (REDACT) ---
     anchor_nav = "SEMUA KATEGORI"
     for i, line in enumerate(lines_txt):
         if fuzz.partial_ratio(anchor_nav, line) > 65:
@@ -155,27 +165,49 @@ def process_ocr_final(pil_image, master_product_names=None):
             if y_coord < (pil_image.height * 0.3):
                 h_box = min(lines_data[i]['h'] / scale, 40)
                 draw.rectangle([0, y_coord - 5, pil_image.width, y_coord + h_box + 5], fill="white")
+                
+                if prod_name == "N/A":
+                    p_name_parts = []
+                    for j in range(i + 1, min(i + 4, len(lines_txt))):
+                        if any(k in lines_txt[j] for k in ["PILIH", "SATUAN", "HARGA", "RP"]): break
+                        p_name_parts.append(lines_txt[j])
+                    prod_name = " ".join(p_name_parts).strip()
                 break
 
+    # --- C. SMART PRICE DETECTION ---
     def get_prices(text_segment):
         found = re.findall(r"(?:RP|R9|BP|RD|P)?\s?([\d\.,]{4,9})", text_segment)
-        return [clean_price_val(f) for f in found if 500 < clean_price_val(f) < 2000000]
+        valid = []
+        for f in found:
+            val = clean_price_val(f)
+            if 500 < val < 2000000: valid.append(val)
+        return valid
 
     pcs_area = re.split(r"(PILIH SATUAN|TERMURAH|PCS|RCG|PCH|PCK)", full_text_single)
     if len(pcs_area) > 1:
         prices = get_prices(" ".join(pcs_area[1:]))
-        if len(prices) >= 2: res["PCS"]["n"], res["PCS"]["p"] = max(prices[:2]), min(prices[:2])
-        elif len(prices) == 1: res["PCS"]["n"] = res["PCS"]["p"] = prices[0]
+        if len(prices) >= 2:
+            res["PCS"]["n"], res["PCS"]["p"] = max(prices[:2]), min(prices[:2])
+        elif len(prices) == 1:
+            res["PCS"]["n"] = res["PCS"]["p"] = prices[0]
 
     if "CTN" in full_text_single:
-        prices_ctn = get_prices(full_text_single.split("CTN")[-1])
-        if prices_ctn: res["CTN"]["n"] = res["CTN"]["p"] = prices_ctn[0]
+        ctn_part = full_text_single.split("CTN")[-1]
+        prices_ctn = get_prices(ctn_part)
+        if prices_ctn:
+            res["CTN"]["n"] = res["CTN"]["p"] = prices_ctn[0]
 
+    # --- D. PROMOSI ---
     anchor_promo = "MAU LEBIH UNTUNG? CEK MEKANISME PROMO BERIKUT"
     for i, line in enumerate(lines_txt):
         if anchor_promo in line:
-            promo_lines = [lines_txt[j] for j in range(i + 1, min(i + 3, len(lines_txt)))]
-            promo_desc = " ".join(promo_lines).split("=")[0].strip()
+            promo_lines = []
+            for j in range(i + 1, min(i + 3, len(lines_txt))):
+                promo_lines.append(lines_txt[j])
+            full_promo_txt = " ".join(promo_lines)
+            promo_split = full_promo_txt.split("=")[0].strip()
+            promo_clean = re.sub(r'\bRAP\b', '', promo_split).replace("|", "").strip()
+            promo_desc = re.sub(r'^[^A-Z0-9]+', '', promo_clean)
             break
     
     if promo_desc == "-":
@@ -184,12 +216,12 @@ def process_ocr_final(pil_image, master_product_names=None):
 
     return res["PCS"], res["CTN"], prod_name, raw_ocr_output, pil_image, promo_desc
 
-# ================= UI SIDEBAR & CONTENT =================
+# ================= UI STREAMLIT RENDERING =================
 
 def norm(val):
     return str(val).replace(".0", "").replace(" ", "").strip().upper()
 
-# Sidebar Merah Fixed
+# --- SIDEBAR MERAH (FIXED) ---
 with st.sidebar:
     st.write("---")
     m_code = st.text_input("📍 MASTER CODE", value="6002").upper()
@@ -197,7 +229,7 @@ with st.sidebar:
     week_inp = st.text_input("🗓️ WEEK", value="2")
     st.write("---")
 
-# Konten Utama
+# --- AREA UTAMA ---
 st.markdown("### 📂 UPLOAD SCREENSHOTS")
 files = st.file_uploader("", type=["jpg", "png", "jpeg"], accept_multiple_files=True, label_visibility="collapsed")
 
@@ -207,7 +239,8 @@ if files and m_code and date_inp and week_inp:
         db_targets = {s: pd.read_excel(FILE_PATH, sheet_name=s) for s in SHEETS_TARGET}
         list_nama_master = db_ig[COL_IG_NAME].dropna().unique().tolist()
         
-        final_list, zip_buffer = [], io.BytesIO()
+        final_list = []
+        zip_buffer = io.BytesIO()
         
         with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED) as zf:
             for f in files:
@@ -217,7 +250,8 @@ if files and m_code and date_inp and week_inp:
                     
                     match_code, best_score = None, 0
                     for _, row in db_ig.iterrows():
-                        score = fuzz.partial_ratio(str(row[COL_IG_NAME]).upper(), name)
+                        db_name = str(row[COL_IG_NAME]).upper()
+                        score = fuzz.partial_ratio(db_name, name)
                         if score > 75 and score > best_score:
                             best_score, match_code = score, norm(row["PRODCODE"])
                     
@@ -225,16 +259,19 @@ if files and m_code and date_inp and week_inp:
                     c1, c2, c3 = st.columns([1, 1, 2])
                     c1.metric("PCS (N/P)", f"{pcs['n']:,} / {pcs['p']:,}")
                     c2.metric("CTN", f"{ctn['n']:,}")
-                    c3.success(f"Promo: {p_desc}")
+                    c3.success(f"**Promo:** {p_desc}")
 
                     if match_code:
                         for s_name, df_t in db_targets.items():
+                            df_t.columns = df_t.columns.astype(str).str.strip()
                             match_row = df_t[(df_t["PRODCODE"].astype(str).apply(norm) == match_code) & 
                                              (df_t["MASTER Code"].astype(str).apply(norm) == norm(m_code))]
+                            
                             if not match_row.empty:
                                 final_list.append({
                                     "prodcode": match_code, "sheet": s_name, "index": match_row.index[0],
-                                    "n_pcs": pcs['n'], "p_pcs": pcs['p'], "n_ctn": ctn['n'], "p_ctn": ctn['p'], "p_desc": p_desc
+                                    "n_pcs": pcs['n'], "p_pcs": pcs['p'],
+                                    "n_ctn": ctn['n'], "p_ctn": ctn['p'], "p_desc": p_desc
                                 })
                                 buf = io.BytesIO()
                                 red_img.convert("RGB").save(buf, format="JPEG")
@@ -253,7 +290,8 @@ if files and m_code and date_inp and week_inp:
                         headers = [str(c.value).strip() for c in ws[1]]
                         row_num = r['index'] + 2
                         
-                        def empty_if_zero(val): return val if val != 0 else None
+                        def empty_if_zero(val):
+                            return val if val != 0 else None
 
                         mapping = {
                             "Normal Competitor Price (Pcs)": empty_if_zero(r['n_pcs']),
@@ -262,14 +300,16 @@ if files and m_code and date_inp and week_inp:
                             "Promo Competitor Price (Ctn)": empty_if_zero(r['p_ctn']),
                             "Promosi Competitor": r['p_desc'] if r['p_desc'] != "-" else None
                         }
+                        
                         for col_name, val in mapping.items():
                             if col_name in headers:
                                 ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
                     
                     wb.save(FILE_PATH)
                     st.success("✅ DATABASE UPDATED!")
+                    excel_filename = f"Price_Check_W{week_inp}_{date_inp}.xlsx"
                     with open(FILE_PATH, "rb") as f_excel:
-                        st.download_button("📥 DOWNLOAD EXCEL", f_excel, f"Update_{date_inp}.xlsx", use_container_width=True)
+                        st.download_button("📥 DOWNLOAD EXCEL", f_excel, excel_filename, use_container_width=True)
             with col_btn2:
                 st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"{m_code}.zip", use_container_width=True)
     else:
