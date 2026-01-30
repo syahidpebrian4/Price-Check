@@ -20,34 +20,35 @@ COL_IG_NAME = "PRODNAME_IG"
 
 st.set_page_config(page_title="Price Check", layout="wide")
 
-# CSS: Membuat area logo putih dan sisa sidebar merah
+# --- CSS CUSTOM: Sidebar Merah & Kontainer Logo Putih ---
 st.markdown("""
     <style>
-        /* Samping Sidebar (Background Merah) */
+        /* Sidebar Warna Merah */
         [data-testid="stSidebar"] {
             background-color: #FF0000;
         }
         
-        /* Area Logo di Sidebar (Background Putih) */
-        .logo-container {
+        /* Kontainer Logo Putih di Atas Sidebar */
+        .logo-box {
             background-color: white;
             padding: 20px;
             margin: -60px -20px 20px -20px;
             text-align: center;
-            border-bottom: 5px solid #E5E5E5;
         }
 
-        /* Teks Label di Sidebar agar Putih */
+        /* Label Input di Sidebar agar Putih */
         [data-testid="stSidebar"] .stMarkdown p, 
         [data-testid="stSidebar"] label {
             color: white !important;
             font-weight: bold;
-            font-size: 16px;
         }
         
-        /* Tombol di sidebar agar lebar penuh */
-        .stButton>button {
-            width: 100%;
+        /* Styling Judul Utama */
+        .main-title {
+            font-size: 45px;
+            font-weight: 800;
+            font-family: 'Arial Black', sans-serif;
+            margin-bottom: -10px;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -96,7 +97,7 @@ def process_ocr_final(pil_image, master_product_names=None):
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
     draw = ImageDraw.Draw(pil_image)
 
-    # --- A. NAMA PRODUK ---
+    # --- NAMA PRODUK ---
     if master_product_names:
         best_match, highest_score = "N/A", 0
         for ref_name in master_product_names:
@@ -105,7 +106,7 @@ def process_ocr_final(pil_image, master_product_names=None):
                 highest_score, best_match = score, str(ref_name).upper()
         prod_name = best_match
 
-    # --- B. SENSOR ---
+    # --- SENSOR & HARGA ---
     for i, line in enumerate(lines_txt):
         if any(k in line for k in ["SEMUA", "KATEGORI", "CARI", "INDOGROSIR"]):
             y_coord = lines_data[i]['top'] / scale
@@ -114,7 +115,6 @@ def process_ocr_final(pil_image, master_product_names=None):
                 draw.rectangle([0, y_coord-5, pil_image.width, y_coord+h_box+5], fill="white")
                 break
 
-    # --- C. HARGA ---
     def get_prices(segment):
         found = re.findall(r"(?:RP|R9|BP|RD|P)?\s?([\d\.,]{4,9})", segment)
         return [clean_price_val(f) for f in found if 500 < clean_price_val(f) < 2000000]
@@ -129,7 +129,7 @@ def process_ocr_final(pil_image, master_product_names=None):
         c_prices = get_prices(full_text_single.split("CTN")[-1])
         if c_prices: res["CTN"]["n"] = res["CTN"]["p"] = c_prices[0]
 
-    # --- D. PROMO ---
+    # --- PROMO LOGIC ---
     if "MAU LEBIH UNTUNG" in full_text_single:
         for i, line in enumerate(lines_txt):
             if "MAU LEBIH UNTUNG" in line:
@@ -144,31 +144,27 @@ def process_ocr_final(pil_image, master_product_names=None):
 
 # ================= UI STREAMLIT =================
 
-# --- SIDEBAR ---
+# --- SIDEBAR (INPUT & LOGO) ---
 with st.sidebar:
-    # Mengubah Link Google Drive menjadi Direct Image Link
-    file_id = "1N733EZVansjReDoxh1xVp-_fkrVY1q5C"
-    direct_link = f"https://drive.google.com/uc?export=view&id={file_id}"
+    # Area Logo Putih
+    st.markdown('<div class="logo-box">', unsafe_allow_html=True)
+    if os.path.exists("lotte_logo.png"):
+        st.image("lotte_logo.png", use_container_width=True)
+    else:
+        st.markdown("<h1 style='color: #FF0000; margin: 0;'>LOTTE</h1>", unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
     
-    # Area Logo dengan background putih
-    st.markdown(f"""
-        <div class="logo-container">
-            <img src="{direct_link}" width="150">
-        </div>
-    """, unsafe_allow_html=True)
-    
-    st.markdown("<p style='text-align: center; color: white;'>PRICE CHECK SYSTEM</p>", unsafe_allow_html=True)
     st.divider()
-    
     m_code = st.text_input("🔑 MASTER CODE", placeholder="6002").upper()
     date_inp = st.text_input("📅 DAY", placeholder="22JAN2026").upper()
     week_inp = st.text_input("🗓️ WEEK", placeholder="2")
-    
     st.divider()
 
-# --- MAIN PAGE ---
-st.title("📂 Upload Screenshots")
-files = st.file_uploader("", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+# --- HALAMAN UTAMA ---
+st.markdown('<p class="main-title">PRICE CHECK</p>', unsafe_allow_html=True)
+st.write("---")
+
+files = st.file_uploader("📂 UPLOAD SCREENSHOTS", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
 if files and m_code and date_inp and week_inp:
     if os.path.exists(FILE_PATH):
@@ -243,3 +239,5 @@ if files and m_code and date_inp and week_inp:
                     st.download_button("📥 DOWNLOAD EXCEL", open(FILE_PATH, "rb"), f"Price Check W{week_inp}_{date_inp}.xlsx", use_container_width=True)
             with col_btn2:
                 st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"{m_code}.zip", use_container_width=True)
+    else:
+        st.error(f"Database tidak ditemukan di {FILE_PATH}!")
