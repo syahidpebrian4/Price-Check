@@ -162,6 +162,11 @@ if files and m_code and date_inp and week_inp:
                     m2.metric("CTN (Normal/Promo)", f"{ctn['n']:,} / {ctn['p']:,}")
                     m3.success(f"**Promosi:** {p_desc}")
 
+                    ### TAMBAHAN UNTUK MELIHAT HASIL OCR ###
+                    with st.expander("🔍 Lihat Hasil Pembacaan OCR (Raw Text)"):
+                        st.code(raw_txt)
+                    #######################################
+
                     if match_code:
                         for s_name, df_t in db_targets.items():
                             df_t.columns = df_t.columns.astype(str).str.strip()
@@ -204,13 +209,11 @@ if files and m_code and date_inp and week_inp:
                     wb.save(FILE_PATH)
                     st.success("✅ DATABASE UPDATED!")
                     
-                    # NAMA FILE EXCEL SESUAI PERMINTAAN
                     excel_filename = f"Price Check W{week_inp}_{date_inp}.xlsx"
                     with open(FILE_PATH, "rb") as f:
                         st.download_button("📥 DOWNLOAD EXCEL", f, excel_filename, use_container_width=True)
             
             with col_btn2:
-                # NAMA FILE ZIP SESUAI PERMINTAAN
                 zip_filename = f"{m_code}.zip"
                 st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), zip_filename, use_container_width=True)
     else:
