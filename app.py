@@ -20,18 +20,32 @@ COL_IG_NAME = "PRODNAME_IG"
 
 st.set_page_config(page_title="Price Check", layout="wide")
 
-# CSS: Sidebar Merah & Label Putih (Mirip Mockup Lotte)
+# CSS: Membuat area logo putih dan sisa sidebar merah
 st.markdown("""
     <style>
+        /* Samping Sidebar (Background Merah) */
         [data-testid="stSidebar"] {
             background-color: #FF0000;
         }
+        
+        /* Area Logo di Sidebar (Background Putih) */
+        .logo-container {
+            background-color: white;
+            padding: 20px;
+            margin: -60px -20px 20px -20px;
+            text-align: center;
+            border-bottom: 5px solid #E5E5E5;
+        }
+
+        /* Teks Label di Sidebar agar Putih */
         [data-testid="stSidebar"] .stMarkdown p, 
         [data-testid="stSidebar"] label {
             color: white !important;
             font-weight: bold;
             font-size: 16px;
         }
+        
+        /* Tombol di sidebar agar lebar penuh */
         .stButton>button {
             width: 100%;
         }
@@ -54,7 +68,6 @@ def process_ocr_final(pil_image, master_product_names=None):
     df_ocr = df_ocr[df_ocr['text'].str.strip() != ""]
     df_ocr['text'] = df_ocr['text'].str.upper()
 
-    # Line Grouping
     df_ocr = df_ocr.sort_values(by=['top', 'left'])
     lines_data = []
     if not df_ocr.empty:
@@ -92,17 +105,13 @@ def process_ocr_final(pil_image, master_product_names=None):
                 highest_score, best_match = score, str(ref_name).upper()
         prod_name = best_match
 
-    # --- B. SENSOR & FALLBACK NAME ---
+    # --- B. SENSOR ---
     for i, line in enumerate(lines_txt):
         if any(k in line for k in ["SEMUA", "KATEGORI", "CARI", "INDOGROSIR"]):
             y_coord = lines_data[i]['top'] / scale
             if y_coord < (pil_image.height * 0.3):
                 h_box = min(lines_data[i]['h'] / scale, 40)
                 draw.rectangle([0, y_coord-5, pil_image.width, y_coord+h_box+5], fill="white")
-                if prod_name == "N/A":
-                    p_parts = [lines_txt[j] for j in range(i+1, min(i+4, len(lines_txt))) 
-                               if not any(k in lines_txt[j] for k in ["PILIH", "SATUAN", "RP"])]
-                    prod_name = " ".join(p_parts).strip()
                 break
 
     # --- C. HARGA ---
@@ -135,11 +144,20 @@ def process_ocr_final(pil_image, master_product_names=None):
 
 # ================= UI STREAMLIT =================
 
-# --- SIDEBAR (MERAH) ---
+# --- SIDEBAR ---
 with st.sidebar:
-    # Logo Lotte (Gunakan URL langsung jika tersedia, atau teks styling)
-    st.markdown("<h1 style='color: white; margin-bottom: 0;'>LOTTE</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='color: white; margin-top: -10px; font-size: 20px;'>PRICE CHECK</p>", unsafe_allow_html=True)
+    # Mengubah Link Google Drive menjadi Direct Image Link
+    file_id = "1N733EZVansjReDoxh1xVp-_fkrVY1q5C"
+    direct_link = f"https://drive.google.com/uc?export=view&id={file_id}"
+    
+    # Area Logo dengan background putih
+    st.markdown(f"""
+        <div class="logo-container">
+            <img src="{direct_link}" width="150">
+        </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("<p style='text-align: center; color: white;'>PRICE CHECK SYSTEM</p>", unsafe_allow_html=True)
     st.divider()
     
     m_code = st.text_input("🔑 MASTER CODE", placeholder="6002").upper()
@@ -147,11 +165,10 @@ with st.sidebar:
     week_inp = st.text_input("🗓️ WEEK", placeholder="2")
     
     st.divider()
-    st.write("v3.0 - Ready")
 
 # --- MAIN PAGE ---
 st.title("📂 Upload Screenshots")
-files = st.file_uploader("", type=["jpg", "png", "jpeg"], accept_multiple_files=True, label_visibility="collapsed")
+files = st.file_uploader("", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
 if files and m_code and date_inp and week_inp:
     if os.path.exists(FILE_PATH):
@@ -226,5 +243,3 @@ if files and m_code and date_inp and week_inp:
                     st.download_button("📥 DOWNLOAD EXCEL", open(FILE_PATH, "rb"), f"Price Check W{week_inp}_{date_inp}.xlsx", use_container_width=True)
             with col_btn2:
                 st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"{m_code}.zip", use_container_width=True)
-    else:
-        st.error("Database Excel tidak ditemukan di folder /database!")
