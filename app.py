@@ -185,7 +185,7 @@ def norm(val):
 with st.sidebar:
     st.write("---")
     m_code = st.text_input("📍 MASTER CODE").upper()
-    date_inp = st.text_input("📅 DAYS").upper()
+    date_inp = st.text_input("📅 DATE").upper()
     week_inp = st.text_input("🗓️ WEEK")
     st.write("---")
 
@@ -268,4 +268,5 @@ if files and m_code and date_inp and week_inp:
                 st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"{m_code}.zip", use_container_width=True)
     else:
         st.error("Database Excel tidak ditemukan!")
+
 
