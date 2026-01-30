@@ -26,7 +26,7 @@ def clean_price_val(raw_str):
     clean = re.sub(r'[^\d]', '', str(raw_str))
     return int(clean) if clean else 0
 
-def process_ocr_final(pil_image):
+def process_ocr_final(pil_image, master_product_names=None):
     # 1. Image Preprocessing
     img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
     scale = 2.0
@@ -68,19 +68,36 @@ def process_ocr_final(pil_image):
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
     draw = ImageDraw.Draw(pil_image)
 
-    # --- A. NAMA PRODUK & SENSOR ---
-    anchor_nav = "SEMUA KATEGORI ~ CARI DI KLIK INDOGROSIR"
-    for i, line in enumerate(lines_txt):
-        if fuzz.partial_ratio(anchor_nav, line) > 75:
-            y, h = lines_data[i]['top'] / scale, lines_data[i]['h'] / scale
-            draw.rectangle([0, y - 5, pil_image.width, y + h + 5], fill="white")
-            
-            p_name_parts = []
-            for j in range(i + 1, min(i + 3, len(lines_txt))):
-                if any(k in lines_txt[j] for k in ["PILIH", "SATUAN", "POTONGAN"]): break
-                p_name_parts.append(lines_txt[j])
-            prod_name = " ".join(p_name_parts).strip()
-            break
+    # --- A. NAMA PRODUK (LOGIKA LIST MASTER & FALLBACK) ---
+    found_via_master = False
+    if master_product_names:
+        best_match = "N/A"
+        highest_score = 0
+        for ref_name in master_product_names:
+            m_name = str(ref_name).upper()
+            # Mencari kemiripan nama produk di dalam seluruh teks OCR
+            score = fuzz.partial_ratio(m_name, full_text_single)
+            if score > 85 and score > highest_score:
+                highest_score = score
+                best_match = m_name
+        
+        if best_match != "N/A":
+            prod_name = best_match
+            found_via_master = True
+
+    # Fallback ke logika posisi jika tidak ketemu di list master
+    if not found_via_master:
+        anchor_nav = "SEMUA KATEGORI ~ CARI DI KLIK INDOGROSIR"
+        for i, line in enumerate(lines_txt):
+            if fuzz.partial_ratio(anchor_nav, line) > 75:
+                y, h = lines_data[i]['top'] / scale, lines_data[i]['h'] / scale
+                draw.rectangle([0, y - 5, pil_image.width, y + h + 5], fill="white")
+                p_name_parts = []
+                for j in range(i + 1, min(i + 3, len(lines_txt))):
+                    if any(k in lines_txt[j] for k in ["PILIH", "SATUAN", "POTONGAN"]): break
+                    p_name_parts.append(lines_txt[j])
+                prod_name = " ".join(p_name_parts).strip()
+                break
 
     # --- B. HARGA PCS ---
     pcs_pattern = r"PILIH\s*\d*\s*SATUAN\s*JUAL"
@@ -132,8 +149,13 @@ files = st.file_uploader("📂 UPLOAD SCREENSHOTS", type=["jpg", "png", "jpeg"],
 
 if files and m_code and date_inp and week_inp:
     if os.path.exists(FILE_PATH):
+        # Load Database
         db_ig = pd.read_excel(FILE_PATH, sheet_name=SHEET_MASTER_IG)
         db_targets = {s: pd.read_excel(FILE_PATH, sheet_name=s) for s in SHEETS_TARGET}
+        
+        # Ambil daftar nama produk unik dari database untuk pencarian Fuzzy
+        list_nama_master = db_ig[COL_IG_NAME].dropna().unique().tolist()
+        
         final_list = []
         zip_buffer = io.BytesIO()
         
@@ -141,7 +163,8 @@ if files and m_code and date_inp and week_inp:
             for f in files:
                 with st.container(border=True):
                     img_pil = Image.open(f)
-                    pcs, ctn, name, raw_txt, red_img, p_desc = process_ocr_final(img_pil)
+                    # Masukkan list_nama_master ke fungsi pemroses
+                    pcs, ctn, name, raw_txt, red_img, p_desc = process_ocr_final(img_pil, master_product_names=list_nama_master)
                     
                     match_code, best_score = None, 0
                     for _, row in db_ig.iterrows():
@@ -162,10 +185,9 @@ if files and m_code and date_inp and week_inp:
                     m2.metric("CTN (Normal/Promo)", f"{ctn['n']:,} / {ctn['p']:,}")
                     m3.success(f"**Promosi:** {p_desc}")
 
-                    ### TAMBAHAN UNTUK MELIHAT HASIL OCR ###
+                    # Expander untuk melihat hasil mentah OCR
                     with st.expander("🔍 Lihat Hasil Pembacaan OCR (Raw Text)"):
                         st.code(raw_txt)
-                    #######################################
 
                     if match_code:
                         for s_name, df_t in db_targets.items():
