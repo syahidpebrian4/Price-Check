@@ -20,15 +20,17 @@ COL_IG_NAME = "PRODNAME_IG"
 
 st.set_page_config(page_title="Price Check", layout="wide")
 
-# CSS Khusus untuk membuat Sidebar berwarna Merah seperti di gambar
+# CSS: Sidebar Merah & Label Putih (Mirip Mockup Lotte)
 st.markdown("""
     <style>
         [data-testid="stSidebar"] {
             background-color: #FF0000;
         }
-        [data-testid="stSidebar"] .stMarkdown p, [data-testid="stSidebar"] label {
+        [data-testid="stSidebar"] .stMarkdown p, 
+        [data-testid="stSidebar"] label {
             color: white !important;
             font-weight: bold;
+            font-size: 16px;
         }
         .stButton>button {
             width: 100%;
@@ -85,13 +87,12 @@ def process_ocr_final(pil_image, master_product_names=None):
     if master_product_names:
         best_match, highest_score = "N/A", 0
         for ref_name in master_product_names:
-            m_name = str(ref_name).upper()
-            score = fuzz.partial_ratio(m_name, full_text_single)
+            score = fuzz.partial_ratio(str(ref_name).upper(), full_text_single)
             if score > 80 and score > highest_score:
-                highest_score, best_match = score, m_name
+                highest_score, best_match = score, str(ref_name).upper()
         prod_name = best_match
 
-    # --- B. SENSOR ---
+    # --- B. SENSOR & FALLBACK NAME ---
     for i, line in enumerate(lines_txt):
         if any(k in line for k in ["SEMUA", "KATEGORI", "CARI", "INDOGROSIR"]):
             y_coord = lines_data[i]['top'] / scale
@@ -99,14 +100,12 @@ def process_ocr_final(pil_image, master_product_names=None):
                 h_box = min(lines_data[i]['h'] / scale, 40)
                 draw.rectangle([0, y_coord-5, pil_image.width, y_coord+h_box+5], fill="white")
                 if prod_name == "N/A":
-                    p_parts = []
-                    for j in range(i+1, min(i+4, len(lines_txt))):
-                        if any(k in lines_txt[j] for k in ["PILIH", "SATUAN", "HARGA"]): break
-                        p_parts.append(lines_txt[j])
+                    p_parts = [lines_txt[j] for j in range(i+1, min(i+4, len(lines_txt))) 
+                               if not any(k in lines_txt[j] for k in ["PILIH", "SATUAN", "RP"])]
                     prod_name = " ".join(p_parts).strip()
                 break
 
-    # --- C. HARGA SMART ---
+    # --- C. HARGA ---
     def get_prices(segment):
         found = re.findall(r"(?:RP|R9|BP|RD|P)?\s?([\d\.,]{4,9})", segment)
         return [clean_price_val(f) for f in found if 500 < clean_price_val(f) < 2000000]
@@ -118,8 +117,7 @@ def process_ocr_final(pil_image, master_product_names=None):
         elif len(prices) == 1: res["PCS"]["n"] = res["PCS"]["p"] = prices[0]
 
     if "CTN" in full_text_single:
-        ctn_area = full_text_single.split("CTN")[-1]
-        c_prices = get_prices(ctn_area)
+        c_prices = get_prices(full_text_single.split("CTN")[-1])
         if c_prices: res["CTN"]["n"] = res["CTN"]["p"] = c_prices[0]
 
     # --- D. PROMO ---
@@ -135,27 +133,25 @@ def process_ocr_final(pil_image, master_product_names=None):
 
     return res["PCS"], res["CTN"], prod_name, raw_ocr_output, pil_image, promo_desc
 
-# ================= UI STREAMLIT (SIDEBAR MODE) =================
+# ================= UI STREAMLIT =================
 
-# Logo Lotte & Judul
-st.title("🔴 LOTTE PRICE CHECK")
-
-# --- SIDEBAR (BAGIAN MERAH) ---
+# --- SIDEBAR (MERAH) ---
 with st.sidebar:
-    st.markdown("### 🔑 MASTER CODE")
-    m_code = st.text_input("Input Code", placeholder="e.g. 6002", label_visibility="collapsed").upper()
+    # Logo Lotte (Gunakan URL langsung jika tersedia, atau teks styling)
+    st.markdown("<h1 style='color: white; margin-bottom: 0;'>LOTTE</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='color: white; margin-top: -10px; font-size: 20px;'>PRICE CHECK</p>", unsafe_allow_html=True)
+    st.divider()
     
-    st.markdown("### 📅 DAY")
-    date_inp = st.text_input("Input Day", placeholder="e.g. 22JAN2026", label_visibility="collapsed").upper()
-    
-    st.markdown("### 🗓️ WEEK")
-    week_inp = st.text_input("Input Week", placeholder="e.g. 2", label_visibility="collapsed")
+    m_code = st.text_input("🔑 MASTER CODE", placeholder="6002").upper()
+    date_inp = st.text_input("📅 DAY", placeholder="22JAN2026").upper()
+    week_inp = st.text_input("🗓️ WEEK", placeholder="2")
     
     st.divider()
-    st.info("Pastikan Database Excel sudah berada di folder `/database`")
+    st.write("v3.0 - Ready")
 
-# --- MAIN CONTENT ---
-files = st.file_uploader("📂 UPLOAD SCREENSHOTS", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+# --- MAIN PAGE ---
+st.title("📂 Upload Screenshots")
+files = st.file_uploader("", type=["jpg", "png", "jpeg"], accept_multiple_files=True, label_visibility="collapsed")
 
 if files and m_code and date_inp and week_inp:
     if os.path.exists(FILE_PATH):
@@ -173,8 +169,7 @@ if files and m_code and date_inp and week_inp:
                     
                     match_code, best_score = None, 0
                     for _, row in db_ig.iterrows():
-                        db_name = str(row[COL_IG_NAME]).upper()
-                        score = fuzz.partial_ratio(db_name, name)
+                        score = fuzz.partial_ratio(str(row[COL_IG_NAME]).upper(), name)
                         if score > 75 and score > best_score:
                             best_score, match_code = score, str(row["PRODCODE"]).replace(".0","").strip()
                     
@@ -182,7 +177,7 @@ if files and m_code and date_inp and week_inp:
                     c1, c2 = st.columns([2, 1])
                     with c1: st.write(f"**OCR Name:** `{name}`")
                     with c2: 
-                        if match_code: st.success(f"**Matched:** {match_code}")
+                        if match_code: st.success(f"**Matched Code:** {match_code}")
                         else: st.warning("⚠️ Code Not Found")
 
                     m1, m2, m3 = st.columns([1, 1, 2])
@@ -209,7 +204,7 @@ if files and m_code and date_inp and week_inp:
             st.divider()
             col_btn1, col_btn2 = st.columns(2)
             with col_btn1:
-                if st.button("🚀 UPDATE DATABASE"):
+                if st.button("🚀 UPDATE DATABASE", use_container_width=True):
                     wb = load_workbook(FILE_PATH)
                     for r in final_list:
                         ws = wb[r['sheet']]
@@ -227,9 +222,9 @@ if files and m_code and date_inp and week_inp:
                             if col_name in headers:
                                 ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
                     wb.save(FILE_PATH)
-                    st.success("✅ UPDATED")
-                    st.download_button("📥 DOWNLOAD EXCEL", open(FILE_PATH, "rb"), f"Price Check W{week_inp}_{date_inp}.xlsx")
+                    st.success("✅ DATABASE UPDATED!")
+                    st.download_button("📥 DOWNLOAD EXCEL", open(FILE_PATH, "rb"), f"Price Check W{week_inp}_{date_inp}.xlsx", use_container_width=True)
             with col_btn2:
-                st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"{m_code}.zip")
+                st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"{m_code}.zip", use_container_width=True)
     else:
-        st.error("Database Excel tidak ditemukan!")
+        st.error("Database Excel tidak ditemukan di folder /database!")
