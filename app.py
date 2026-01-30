@@ -185,11 +185,11 @@ def norm(val):
 with st.sidebar:
     st.write("---")
     m_code = st.text_input("📍 MASTER CODE").upper()
-    date_inp = st.text_input("📅 DAY").upper()
+    date_inp = st.text_input("📅 DAYS").upper()
     week_inp = st.text_input("🗓️ WEEK")
     st.write("---")
 
-files = st.file_uploader("📂 UPLOAD SCREENSHOTS", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+files = st.file_uploader("📂 UPLOAD GAMBAR", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
 if files and m_code and date_inp and week_inp:
     if os.path.exists(FILE_PATH):
@@ -263,8 +263,9 @@ if files and m_code and date_inp and week_inp:
                     wb.save(FILE_PATH)
                     st.success("✅ DATABASE UPDATED!")
                     with open(FILE_PATH, "rb") as f:
-                        st.download_button("📥 DOWNLOAD EXCEL", f, f"Update_{date_inp}.xlsx", use_container_width=True)
+                        st.download_button("📥 DOWNLOAD EXCEL", f, f"PRICE CHECK W{week_inp}_{date_inp}.xlsx", use_container_width=True)
             with col_btn2:
                 st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"{m_code}.zip", use_container_width=True)
     else:
         st.error("Database Excel tidak ditemukan!")
+
