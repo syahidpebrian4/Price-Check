@@ -68,65 +68,80 @@ def process_ocr_final(pil_image, master_product_names=None):
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
     draw = ImageDraw.Draw(pil_image)
 
-    # --- A. NAMA PRODUK & SENSOR (MENGGUNAKAN REDACT ASLI) ---
-    anchor_nav = "SEMUA KATEGORI ~ CARI DI KLIK INDOGROSIR"
+    # --- A. NAMA PRODUK (DI MANAPUN POSISINYA) ---
+    if master_product_names:
+        best_match_name = "N/A"
+        highest_score = 0
+        for ref_name in master_product_names:
+            m_name = str(ref_name).upper()
+            # Mencari kemiripan nama produk di seluruh hasil pembacaan
+            score = fuzz.partial_ratio(m_name, full_text_single)
+            if score > 85 and score > highest_score:
+                highest_score = score
+                best_match_name = m_name
+        prod_name = best_match_name
+
+    # --- B. SENSOR (REDACT) & FALLBACK NAMA ---
+    anchor_nav = "SEMUA KATEGORI"
     for i, line in enumerate(lines_txt):
-        if fuzz.partial_ratio(anchor_nav, line) > 75:
-            # LOGIKA REDACT ASLI
+        if fuzz.partial_ratio(anchor_nav, line) > 70:
+            # Sensor navigasi atas (lokasi/akun)
             y, h = lines_data[i]['top'] / scale, lines_data[i]['h'] / scale
-            draw.rectangle([0, y - 5, pil_image.width, y + h + 5], fill="white")
+            draw.rectangle([0, y - 10, pil_image.width, y + h + 10], fill="white")
             
-            # AMBIL NAMA PRODUK DENGAN MASTER LIST (JIKA ADA)
-            if master_product_names:
-                best_match = "N/A"
-                highest_score = 0
-                for ref_name in master_product_names:
-                    m_name = str(ref_name).upper()
-                    score = fuzz.partial_ratio(m_name, full_text_single)
-                    if score > 85 and score > highest_score:
-                        highest_score = score
-                        best_match = m_name
-                prod_name = best_match
-            
-            # FALLBACK KE LOGIKA POSISI ASLI JIKA MASTER LIST GAGAL
+            # Jika master list gagal mendeteksi nama, gunakan cara lama (posisi baris)
             if prod_name == "N/A":
                 p_name_parts = []
-                for j in range(i + 1, min(i + 3, len(lines_txt))):
-                    if any(k in lines_txt[j] for k in ["PILIH", "SATUAN", "POTONGAN"]): break
+                for j in range(i + 1, min(i + 4, len(lines_txt))):
+                    if any(k in lines_txt[j] for k in ["PILIH", "SATUAN", "HARGA", "RP"]): break
                     p_name_parts.append(lines_txt[j])
                 prod_name = " ".join(p_name_parts).strip()
             break
 
-    # --- B. HARGA PCS ---
-    pcs_pattern = r"PILIH\s*\d*\s*SATUAN\s*JUAL"
-    if re.search(pcs_pattern, full_text_single):
-        after_unit = re.split(pcs_pattern, full_text_single)[1]
-        m = re.search(r"(PCS|RCG|BOX)(.*?)[\/|ISI|BS]", after_unit)
-        if m:
-            p = re.findall(r"RP\s*([\d\-\.,%]+)", m.group(2))
-            if len(p) >= 2: res["PCS"]["n"], res["PCS"]["p"] = clean_price_val(p[0]), clean_price_val(p[1])
-            elif len(p) == 1: res["PCS"]["n"] = res["PCS"]["p"] = clean_price_val(p[0])
+    # --- C. HARGA PCS/PCH/PCK ---
+    # Jika pola 'PILIH SATUAN' tidak ada (format web), kita cari langsung di full text
+    pcs_pattern = r"(PILIH\s*\d*\s*SATUAN\s*JUAL|HARGA TERMURAH)"
+    target_area = full_text_single
+    
+    match_split = re.split(pcs_pattern, full_text_single)
+    if len(match_split) > 1:
+        target_area = match_split[-1]
 
-    # --- C. HARGA CTN ---
+    # Mencari satuan PCS, RCG, BOX, PCK, atau PCH
+    m = re.search(r"(PCS|RCG|BOX|PCK|PCH)(.*?)[\/|ISI|BS|HARGA]", target_area)
+    if m:
+        p = re.findall(r"RP\s*([\d\-\.,%]+)", m.group(2))
+        if len(p) >= 2: 
+            res["PCS"]["n"], res["PCS"]["p"] = clean_price_val(p[0]), clean_price_val(p[1])
+        elif len(p) == 1: 
+            res["PCS"]["n"] = res["PCS"]["p"] = clean_price_val(p[0])
+    else:
+        # Cadangan: Cari harga pertama yang muncul di seluruh teks jika pola satuan gagal
+        p_fallback = re.findall(r"RP\s*([\d\.,]+)", full_text_single)
+        if p_fallback and res["PCS"]["n"] == 0:
+            res["PCS"]["n"] = res["PCS"]["p"] = clean_price_val(p_fallback[0])
+
+    # --- D. HARGA CTN ---
     if "CTN" in full_text_single:
         after_ctn = full_text_single.split("CTN")[1]
         ctn_m = re.search(r"(.*?)[\/|ISI]", after_ctn)
         if ctn_m:
             p_ctn = re.findall(r"RP\s*([\d\-\.,%]+)", ctn_m.group(1))
-            if len(p_ctn) >= 2: res["CTN"]["n"], res["CTN"]["p"] = clean_price_val(p_ctn[0]), clean_price_val(p_ctn[1])
-            elif len(p_ctn) == 1: res["CTN"]["n"] = res["CTN"]["p"] = clean_price_val(p_ctn[0])
+            if len(p_ctn) >= 2: 
+                res["CTN"]["n"], res["CTN"]["p"] = clean_price_val(p_ctn[0]), clean_price_val(p_ctn[1])
+            elif len(p_ctn) == 1: 
+                res["CTN"]["n"] = res["CTN"]["p"] = clean_price_val(p_ctn[0])
 
-    # --- D. PROMOSI ---
+    # --- E. PROMOSI ---
     anchor_promo = "MAU LEBIH UNTUNG? CEK MEKANISME PROMO BERIKUT"
     for i, line in enumerate(lines_txt):
-        if anchor_promo in line:
+        if fuzz.partial_ratio(anchor_promo, line) > 70:
             promo_lines = []
             for j in range(i + 1, min(i + 3, len(lines_txt))):
                 promo_lines.append(lines_txt[j])
             full_promo_txt = " ".join(promo_lines)
             promo_split = full_promo_txt.split("=")[0].strip()
-            promo_clean = re.sub(r'\bRAP\b', '', promo_split)
-            promo_clean = promo_clean.replace("|", "").strip()
+            promo_clean = re.sub(r'\bRAP\b', '', promo_split).replace("|", "").strip()
             promo_desc = re.sub(r'^[^A-Z0-9]+', '', promo_clean)
             break
 
@@ -150,7 +165,7 @@ if files and m_code and date_inp and week_inp:
         db_ig = pd.read_excel(FILE_PATH, sheet_name=SHEET_MASTER_IG)
         db_targets = {s: pd.read_excel(FILE_PATH, sheet_name=s) for s in SHEETS_TARGET}
         
-        # Ambil daftar nama master untuk pencarian Fuzzy
+        # Daftar nama unik dari Excel untuk pencarian Fuzzy di manapun
         list_nama_master = db_ig[COL_IG_NAME].dropna().unique().tolist()
         
         final_list = []
@@ -160,14 +175,15 @@ if files and m_code and date_inp and week_inp:
             for f in files:
                 with st.container(border=True):
                     img_pil = Image.open(f)
-                    # Memanggil fungsi dengan Master List Nama
+                    # Proses OCR dengan Master List
                     pcs, ctn, name, raw_txt, red_img, p_desc = process_ocr_final(img_pil, master_product_names=list_nama_master)
                     
+                    # Pencocokan Kode Produk (Prodcode)
                     match_code, best_score = None, 0
                     for _, row in db_ig.iterrows():
                         db_name = str(row[COL_IG_NAME]).upper()
                         score = fuzz.partial_ratio(db_name, name)
-                        if score > 70 and score > best_score:
+                        if score > 75 and score > best_score:
                             best_score, match_code = score, norm(row["PRODCODE"])
                     
                     st.markdown(f"### 📄 {f.name}")
@@ -182,7 +198,6 @@ if files and m_code and date_inp and week_inp:
                     m2.metric("CTN (Normal/Promo)", f"{ctn['n']:,} / {ctn['p']:,}")
                     m3.success(f"**Promosi:** {p_desc}")
 
-                    # TAMBAHAN: Expander untuk melihat pembacaan OCR utuh
                     with st.expander("🔍 Lihat Hasil Pembacaan OCR (Raw Text)"):
                         st.code(raw_txt)
 
@@ -207,7 +222,6 @@ if files and m_code and date_inp and week_inp:
         if final_list:
             st.divider()
             col_btn1, col_btn2 = st.columns(2)
-            
             with col_btn1:
                 if st.button("🚀 UPDATE DATABASE", use_container_width=True):
                     wb = load_workbook(FILE_PATH)
