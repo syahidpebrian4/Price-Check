@@ -28,7 +28,7 @@ def get_base64_image(image_path):
             return base64.b64encode(img_file.read()).decode()
     return None
 
-# --- CSS CUSTOM ---
+# --- CSS CUSTOM HEADER LOTTE ---
 logo_b64 = get_base64_image("lotte_logo.png")
 st.markdown(f"""
     <style>
@@ -51,96 +51,93 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 def clean_price_val(raw_str):
+    """Membersihkan teks dan memperbaiki salah baca OCR (O=0, S=5, dll)"""
     if not raw_str: return 0
-    # Koreksi karakter umum yang sering salah baca oleh OCR
     s = str(raw_str).upper()
-    s = s.replace('O', '0').replace('S', '5').replace('I', '1').replace('B', '8')
+    s = s.replace('O', '0').replace('S', '5').replace('I', '1').replace('B', '8').replace('G', '6')
     clean = re.sub(r'[^\d]', '', s)
     return int(clean) if clean else 0
 
 def get_prices_smart(text_segment):
-    """Fungsi ekstraksi harga dengan pembersihan karakter non-harga"""
+    """Logika ekstraksi: Abaikan kurung, abaikan setelah / atau ISI"""
     if not text_segment: return []
-    # 1. Hapus teks di dalam kurung agar tidak mengambil (RP 14.800 /PCS)
-    text_segment = re.sub(r'\(.*?\)', '', text_segment)
-    # 2. Hapus teks setelah kata ISI atau tanda /
-    text_segment = re.split(r"/|ISI", text_segment)[0]
-    # 3. Cari angka
-    found = re.findall(r"(?:RP|R9|BP|RD|P)?\s?([\d\.,]{4,10})", text_segment)
+    
+    # 1. HAPUS SEMUA DI DALAM KURUNG (Abaikan kalkulasi sistem)
+    text_segment = re.sub(r'\(.*?\)', ' ', text_segment)
+    
+    # 2. POTONG TEKS setelah tanda / atau kata ISI
+    # Kita pecah per baris atau per spasi besar untuk memastikan potongan akurat
+    segments = re.split(r"/|ISI", text_segment)
+    text_to_scan = segments[0] # Ambil bagian sebelum pembagi
+    
+    # 3. CARI ANGKA (Minimal 4 digit agar tidak mengambil kuantitas kecil)
+    found = re.findall(r"[\d\.,O S I B]{4,12}", text_to_scan)
+    
     valid = []
     for f in found:
         val = clean_price_val(f)
-        if 400 < val < 5000000: # Range diperluas
+        # Filter range harga kompetitor (500 perak - 5 juta)
+        if 500 <= val <= 5000000:
             valid.append(val)
     return valid
 
 def process_ocr_final(pil_image, master_product_names=None):
     img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+    # Pre-processing untuk ketajaman angka
     scale = 2.0
     img_resized = cv2.resize(img_np, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
     
-    d = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT, config=r'--oem 3 --psm 6')
-    df_ocr = pd.DataFrame(d)
-    df_ocr = df_ocr[df_ocr['text'].str.strip() != ""]
-    df_ocr['text'] = df_ocr['text'].str.upper()
+    # OCR per blok teks
+    raw_data = pytesseract.image_to_string(gray, config='--oem 3 --psm 6')
+    lines = [l.strip().upper() for l in raw_data.split('\n') if l.strip()]
+    full_text = " ".join(lines)
 
-    # Sorting urutan baca
-    df_ocr = df_ocr.sort_values(by=['top', 'left'])
-    lines_txt = []
-    if not df_ocr.empty:
-        curr_top = df_ocr.iloc[0]['top']
-        line = []
-        for _, row in df_ocr.iterrows():
-            if row['top'] - curr_top > 15:
-                lines_txt.append(" ".join(line))
-                line = [row['text']]
-                curr_top = row['top']
-            else:
-                line.append(row['text'])
-        lines_txt.append(" ".join(line))
-
-    full_text = " ".join(lines_txt)
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
     
-    # --- PEMBAGIAN AREA (PARTITIONING) ---
-    # Kita bagi teks menjadi bagian PCS dan bagian CTN
+    # --- PEMISAHAN AREA PCS DAN CTN ---
     if "CTN" in full_text:
-        parts = full_text.split("CTN")
+        # Cari posisi kata CTN pertama kali
+        parts = re.split(r"CTN", full_text, maxsplit=1, flags=re.IGNORECASE)
         pcs_section = parts[0]
         ctn_section = "CTN " + parts[1]
     else:
         pcs_section = full_text
         ctn_section = ""
 
-    # --- EKSTRAKSI PCS ---
-    # Cari angka di area PCS saja
-    all_pcs_prices = get_prices_smart(pcs_section)
-    if len(all_pcs_prices) >= 2:
-        res["PCS"]["n"], res["PCS"]["p"] = all_pcs_prices[0], all_pcs_prices[1]
-    elif len(all_pcs_prices) == 1:
-        res["PCS"]["n"] = res["PCS"]["p"] = all_pcs_prices[0]
+    # --- EKSTRAKSI HARGA PCS ---
+    prices_pcs = get_prices_smart(pcs_section)
+    if len(prices_pcs) >= 2:
+        # Harga PERTAMA = Normal, Harga KEDUA = Promo
+        res["PCS"]["n"], res["PCS"]["p"] = prices_pcs[0], prices_pcs[1]
+    elif len(prices_pcs) == 1:
+        res["PCS"]["n"] = res["PCS"]["p"] = prices_pcs[0]
 
-    # --- EKSTRAKSI CTN ---
+    # --- EKSTRAKSI HARGA CTN ---
     if ctn_section:
-        all_ctn_prices = get_prices_smart(ctn_section)
-        if len(all_ctn_prices) >= 2:
-            res["CTN"]["n"], res["CTN"]["p"] = all_ctn_prices[0], all_ctn_prices[1]
-        elif len(all_ctn_prices) == 1:
-            res["CTN"]["n"] = res["CTN"]["p"] = all_ctn_prices[0]
+        prices_ctn = get_prices_smart(ctn_section)
+        if len(prices_ctn) >= 2:
+            res["CTN"]["n"], res["CTN"]["p"] = prices_ctn[0], prices_ctn[1]
+        elif len(prices_ctn) == 1:
+            res["CTN"]["n"] = res["CTN"]["p"] = prices_ctn[0]
 
-    # --- NAMA PRODUK & PROMO ---
+    # --- FUZZY MATCH NAMA PRODUK ---
     prod_name = "N/A"
     if master_product_names:
-        scores = [(fuzz.partial_ratio(str(name).upper(), full_text), name) for name in master_product_names]
-        best = max(scores, key=lambda x: x[0])
-        if best[0] > 70: prod_name = best[1]
+        best_score = 0
+        for m_name in master_product_names:
+            score = fuzz.partial_ratio(str(m_name).upper(), full_text)
+            if score > best_score:
+                best_score = score
+                prod_name = m_name
+        if best_score < 70: prod_name = "N/A"
 
+    # --- DETEKSI PROMO MEKANISME ---
     promo_desc = "-"
     m_promo = re.search(r"(BELI\s\d+\sGRATIS\s\d+|MIN\.\sBELI\s\d+)", full_text)
     if m_promo: promo_desc = m_promo.group(0)
 
-    return res["PCS"], res["CTN"], prod_name, "\n".join(lines_txt), pil_image, promo_desc
+    return res["PCS"], res["CTN"], prod_name, "\n".join(lines), pil_image, promo_desc
 
 # ================= UI STREAMLIT =================
 def norm(val): return str(val).replace(".0", "").replace(" ", "").strip().upper()
@@ -148,8 +145,9 @@ def norm(val): return str(val).replace(".0", "").replace(" ", "").strip().upper(
 with st.sidebar:
     st.header("INPUT DATA")
     m_code = st.text_input("📍 MASTER CODE").upper()
-    date_inp = st.text_input("📅 DATE").upper()
+    date_inp = st.text_input("📅 DATE (DDMMYY)").upper()
     week_inp = st.text_input("🗓️ WEEK")
+    st.divider()
 
 files = st.file_uploader("📂 UPLOAD GAMBAR", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
@@ -169,16 +167,24 @@ if files and m_code and date_inp and week_inp:
                     # Match Product Code
                     match_code = None
                     scores = [(fuzz.partial_ratio(str(row[COL_IG_NAME]).upper(), name), row["PRODCODE"]) for _, row in db_ig.iterrows()]
-                    best_match = max(scores, key=lambda x: x[0])
-                    if best_match[0] > 75: match_code = norm(best_match[1])
+                    if scores:
+                        best_match = max(scores, key=lambda x: x[0])
+                        if best_match[0] > 75: match_code = norm(best_match[1])
                     
                     st.markdown(f"### 📄 {f.name}")
                     col1, col2, col3 = st.columns([1,1,1])
-                    col1.metric("UNIT (Norm/Prom)", f"{pcs['n']:,}", f"{pcs['p']:,}", delta_color="inverse")
-                    col2.metric("CTN (Norm/Prom)", f"{ctn['n']:,}", f"{ctn['p']:,}", delta_color="inverse")
-                    col3.info(f"**Matched:** {match_code}")
+                    with col1:
+                        st.metric("PCS NORMAL", f"{pcs['n']:,}")
+                        st.metric("PCS PROMO", f"{pcs['p']:,}")
+                    with col2:
+                        st.metric("CTN NORMAL", f"{ctn['n']:,}")
+                        st.metric("CTN PROMO", f"{ctn['p']:,}")
+                    with col3:
+                        st.info(f"**Produk:** {name}")
+                        st.success(f"**Code:** {match_code}")
+                        st.warning(f"**Promo:** {p_desc}")
                     
-                    with st.expander("🔍 DEBUG SCAN"):
+                    with st.expander("🔍 LIHAT DETAIL HASIL SCAN"):
                         st.code(raw_txt)
 
                     if match_code:
@@ -198,12 +204,12 @@ if files and m_code and date_inp and week_inp:
                 gc.collect()
 
         if final_list:
-            if st.button("🚀 UPDATE DATABASE & EXCEL"):
+            if st.button("🚀 UPDATE DATABASE & EXCEL", use_container_width=True):
                 wb = load_workbook(FILE_PATH)
                 for r in final_list:
                     ws = wb[r['sheet']]
                     headers = [str(c.value).strip() for c in ws[1]]
-                    row = r['idx'] + 2
+                    row_idx = r['idx'] + 2
                     mapping = {
                         "Normal Competitor Price (Pcs)": r['np'],
                         "Promo Competitor Price (Pcs)": r['pp'],
@@ -213,11 +219,11 @@ if files and m_code and date_inp and week_inp:
                     }
                     for col_name, val in mapping.items():
                         if col_name in headers:
-                            ws.cell(row=row, column=headers.index(col_name) + 1).value = val if val != 0 else None
+                            ws.cell(row=row_idx, column=headers.index(col_name) + 1).value = val if val != 0 else None
                 wb.save(FILE_PATH)
-                st.success("DATABASE UPDATED!")
+                st.success("✅ DATABASE BERHASIL DIUPDATE!")
                 with open(FILE_PATH, "rb") as f:
-                    st.download_button("📥 DOWNLOAD EXCEL", f, f"RESULT_{date_inp}.xlsx")
-                st.download_button("🖼️ DOWNLOAD ZIP FOTO", zip_buffer.getvalue(), "images.zip")
+                    st.download_button("📥 DOWNLOAD HASIL EXCEL", f, f"PRICING_W{week_inp}_{date_inp}.xlsx", use_container_width=True)
+                st.download_button("🖼️ DOWNLOAD ZIP FOTO", zip_buffer.getvalue(), "bukti_foto.zip", use_container_width=True)
     else:
-        st.error("Excel database not found!")
+        st.error("Excel database tidak ditemukan di folder database/!")
