@@ -105,7 +105,7 @@ def process_ocr_final(pil_image, master_product_names=None):
 
     lines_txt = [l['text'] for l in lines_data]
     full_text_single = " ".join(lines_txt)
-    raw_ocr_output = "\n".join(lines_txt)
+    raw_ocr_output = "\n".join(lines_txt) # Ini variabel untuk menampilkan hasil scan
 
     prod_name, promo_desc = "N/A", "-"
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
@@ -131,12 +131,10 @@ def process_ocr_final(pil_image, master_product_names=None):
                 draw.rectangle([0, y_coord - 5, pil_image.width, y_coord + h_box + 5], fill="white")
                 break
 
-    # --- C. SMART PRICE DETECTION (STOP AT / OR ISI) ---
+    # --- C. SMART PRICE DETECTION ---
     def get_prices(text_segment):
         # Stop pembacaan jika bertemu tanda / atau kata ISI
-        # Regex mencari angka sebelum tanda tersebut
         text_segment = re.split(r"/|ISI", text_segment)[0]
-        
         found = re.findall(r"(?:RP|R9|BP|RD|P)?\s?([\d\.,]{4,9})", text_segment)
         valid = []
         for f in found:
@@ -147,7 +145,6 @@ def process_ocr_final(pil_image, master_product_names=None):
     # Logika PCS
     pcs_area = re.split(r"(PILIH SATUAN|TERMURAH|PCS|RCG|PCH|PCK)", full_text_single)
     if len(pcs_area) > 1:
-        # Mengambil bagian teks setelah pemicu, lalu diproses get_prices
         prices_pcs = get_prices(" ".join(pcs_area[1:]))
         if len(prices_pcs) >= 2:
             res["PCS"]["n"], res["PCS"]["p"] = prices_pcs[0], prices_pcs[1]
@@ -225,6 +222,15 @@ if files and m_code and date_inp and week_inp:
                     m2.metric("CTN (1st/2nd)", f"{ctn['n']:,} / {ctn['p']:,}")
                     m3.success(f"**Promo:** {p_desc}")
 
+                    # --- TAMBAHAN: MENAMPILKAN HASIL SCAN LENGKAP ---
+                    with st.expander("🔍 LIHAT DETAIL HASIL SCAN"):
+                        col_img, col_txt = st.columns([1, 1])
+                        with col_img:
+                            st.image(red_img, caption="Redacted Image", use_container_width=True)
+                        with col_txt:
+                            st.markdown("**Full Text Captured:**")
+                            st.code(raw_txt, language="text")
+
                     if match_code:
                         for s_name, df_t in db_targets.items():
                             df_t.columns = df_t.columns.astype(str).str.strip()
@@ -247,6 +253,7 @@ if files and m_code and date_inp and week_inp:
             with col_btn1:
                 if st.button("🚀 UPDATE DATABASE", use_container_width=True):
                     wb = load_workbook(FILE_PATH)
+                    # (logika update excel tetap sama seperti sebelumnya)
                     for r in final_list:
                         ws = wb[r['sheet']]
                         headers = [str(c.value).strip() for c in ws[1]]
