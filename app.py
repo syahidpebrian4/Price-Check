@@ -49,20 +49,19 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-# --- FUNGSI MEMBERSIHKAN ANGKA ---
+# --- FUNGSI PEMBERSIH ---
 def clean_val(s):
     if not s: return 0
     s = str(s).upper().replace('O','0').replace('S','5').replace('I','1').replace('B','8').replace('L','1').replace('G','6')
     res = re.sub(r'[^\d]', '', s)
     return int(res) if res else 0
 
-# --- LOGIKA POSISI (URUTAN MUNCUL) ---
-def get_prices_by_position(line_text):
-    """Mengambil angka berdasarkan urutan kemunculan di baris"""
-    # 1. Buang isi dalam kurung dulu
-    clean_line = re.sub(r'\(.*?\)', ' ', line_text)
-    # 2. Cari semua kandidat angka (4-15 digit)
-    candidates = re.findall(r'[\d\.,OSIBLG]{4,15}', clean_line)
+def get_first_two_prices(text_segment):
+    """Mengambil maksimal 2 angka pertama dari potongan teks"""
+    # Buat teks bersih dari kurung
+    text_segment = re.sub(r'\(.*?\)', ' ', text_segment)
+    # Cari angka 4-15 digit
+    candidates = re.findall(r'[\d\.,OSIBLG]{4,15}', text_segment)
     
     extracted = []
     for c in candidates:
@@ -70,41 +69,44 @@ def get_prices_by_position(line_text):
         if 400 <= val <= 5000000:
             extracted.append(val)
     
-    # Return urutan: [Normal, Promo]
-    if len(extracted) >= 2:
-        return extracted[0], extracted[1]
-    elif len(extracted) == 1:
-        return extracted[0], extracted[0]
+    if len(extracted) >= 2: return extracted[0], extracted[1]
+    elif len(extracted) == 1: return extracted[0], extracted[0]
     return 0, 0
 
 def process_ocr_final(pil_img, master_names):
     img = np.array(pil_img.convert('RGB'))
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     
-    # OCR - Ambil baris demi baris
+    # OCR - Ambil baris demi baris (PSM 6 untuk layout kolom)
     raw_data = pytesseract.image_to_string(gray, config='--oem 3 --psm 6')
     lines = [l.strip().upper() for l in raw_data.split('\n') if l.strip()]
     
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
     
-    # Kata kunci untuk identifikasi baris
-    pcs_keywords = ["PCS", "RCG", "PCK", "BOX", "PES", "RC6", "B0X", "UNIT"]
-    ctn_keywords = ["CTN", "CIN", "CTH", "CASE", "KARTON", "ISI"]
-
     for line in lines:
-        # Jika baris mengandung keyword PCS
-        if any(kw in line for kw in pcs_keywords):
-            # Ambil berdasarkan POSISI kemunculan di teks
-            n, p = get_prices_by_position(line)
-            if n > 0:
-                res["PCS"]["n"], res["PCS"]["p"] = n, p
-        
-        # Jika baris mengandung keyword CTN
-        elif any(kw in line for kw in ctn_keywords):
-            # Ambil berdasarkan POSISI kemunculan di teks
-            n, p = get_prices_by_position(line)
-            if n > 0:
-                res["CTN"]["n"], res["CTN"]["p"] = n, p
+        # CEK APAKAH BARIS INI PUNYA INFO HARGA (Ada kata kunci PCS/RCG/BOX atau CTN)
+        if any(kw in line for kw in ["PCS", "RCG", "PCK", "BOX", "PES", "UNIT", "CTN", "CIN", "CASE"]):
+            
+            # STRATEGI POTONG TENGAH: Jika ada CTN di baris yang sama dengan PCS
+            if "CTN" in line or "CIN" in line:
+                # Potong teks jadi dua bagian: SEBELUM CTN dan SESUDAH CTN
+                parts = re.split(r"CTN|CIN", line, maxsplit=1)
+                
+                # Bagian Kiri (Biasanya PCS)
+                pcs_n, pcs_p = get_first_two_prices(parts[0])
+                if pcs_n > 0:
+                    res["PCS"]["n"], res["PCS"]["p"] = pcs_n, pcs_p
+                
+                # Bagian Kanan (Pasti CTN)
+                ctn_n, ctn_p = get_first_two_prices(parts[1])
+                if ctn_n > 0:
+                    res["CTN"]["n"], res["CTN"]["p"] = ctn_n, ctn_p
+            
+            else:
+                # Jika tidak ada kata CTN, tapi ada kata PCS dkk
+                if any(kw in line for kw in ["PCS", "RCG", "PCK", "BOX", "PES", "UNIT"]):
+                    n, p = get_first_two_prices(line)
+                    if n > 0: res["PCS"]["n"], res["PCS"]["p"] = n, p
 
     # Fuzzy Match Nama
     full_txt = " ".join(lines)
@@ -115,7 +117,7 @@ def process_ocr_final(pil_img, master_names):
 
     return res["PCS"], res["CTN"], best_name, "\n".join(lines)
 
-# ================= UI STREAMLIT =================
+# ================= UI STREAMLIT (LENGKAP) =================
 with st.sidebar:
     m_code = st.text_input("📍 MASTER CODE").upper()
     date_inp = st.text_input("📅 DATE (DDMMYY)").upper()
@@ -123,7 +125,7 @@ with st.sidebar:
 
 files = st.file_uploader("📂 UPLOAD GAMBAR", accept_multiple_files=True)
 
-if files and m_code and date_inp:
+if files and m_code:
     if os.path.exists(FILE_PATH):
         db_ig = pd.read_excel(FILE_PATH, sheet_name=SHEET_MASTER_IG)
         list_nama_master = db_ig[COL_IG_NAME].dropna().unique().tolist()
@@ -150,7 +152,6 @@ if files and m_code and date_inp:
                     with st.expander("HASIL SCAN"):
                         st.code(raw_txt)
                     
-                    # Simpan data
                     match_code = None
                     scores = [(fuzz.partial_ratio(str(row[COL_IG_NAME]).upper(), name), row["PRODCODE"]) for _, row in db_ig.iterrows()]
                     if scores:
