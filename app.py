@@ -28,9 +28,8 @@ def get_base64_image(image_path):
             return base64.b64encode(img_file.read()).decode()
     return None
 
-# --- CSS CUSTOM: FIXED HEADER & SIDEBAR MERAH PERMANEN ---
+# --- CSS CUSTOM: FIXED HEADER & SIDEBAR ---
 logo_b64 = get_base64_image("lotte_logo.png")
-
 st.markdown(f"""
     <style>
         .custom-header {{
@@ -67,7 +66,7 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-# --- FUNGSI LOGIKA OCR (SESUAI KODE ASLI ANDA) ---
+# --- FUNGSI LOGIKA OCR ---
 def clean_price_val(raw_str):
     if not raw_str: return 0
     clean = re.sub(r'[^\d]', '', str(raw_str))
@@ -84,6 +83,7 @@ def process_ocr_final(pil_image, master_product_names=None):
     df_ocr = df_ocr[df_ocr['text'].str.strip() != ""]
     df_ocr['text'] = df_ocr['text'].str.upper()
 
+    # Sort berdasarkan urutan baca (Top ke Bottom, Left ke Right)
     df_ocr = df_ocr.sort_values(by=['top', 'left'])
     lines_data = []
     if not df_ocr.empty:
@@ -112,7 +112,7 @@ def process_ocr_final(pil_image, master_product_names=None):
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
     draw = ImageDraw.Draw(pil_image)
 
-    # --- A. NAMA PRODUK (GLOBAL SEARCH) ---
+    # --- A. NAMA PRODUK ---
     if master_product_names:
         best_match, highest_score = "N/A", 0
         for ref_name in master_product_names:
@@ -122,7 +122,7 @@ def process_ocr_final(pil_image, master_product_names=None):
                 highest_score, best_match = score, m_name
         prod_name = best_match
 
-    # --- B. SENSOR (REDACT) ---
+    # --- B. REDACT AREA NAVIGASI ---
     anchor_nav = "SEMUA KATEGORI"
     for i, line in enumerate(lines_txt):
         if fuzz.partial_ratio(anchor_nav, line) > 65:
@@ -130,15 +130,9 @@ def process_ocr_final(pil_image, master_product_names=None):
             if y_coord < (pil_image.height * 0.3):
                 h_box = min(lines_data[i]['h'] / scale, 40)
                 draw.rectangle([0, y_coord - 5, pil_image.width, y_coord + h_box + 5], fill="white")
-                if prod_name == "N/A":
-                    p_name_parts = []
-                    for j in range(i + 1, min(i + 4, len(lines_txt))):
-                        if any(k in lines_txt[j] for k in ["PILIH", "SATUAN", "HARGA", "RP"]): break
-                        p_name_parts.append(lines_txt[j])
-                    prod_name = " ".join(p_name_parts).strip()
                 break
 
-    # --- C. SMART PRICE DETECTION (KODE ASLI ANDA) ---
+    # --- C. SMART PRICE DETECTION (UPDATED) ---
     def get_prices(text_segment):
         found = re.findall(r"(?:RP|R9|BP|RD|P)?\s?([\d\.,]{4,9})", text_segment)
         valid = []
@@ -147,18 +141,22 @@ def process_ocr_final(pil_image, master_product_names=None):
             if 500 < val < 2000000: valid.append(val)
         return valid
 
+    # Logika PCS (Urutan: 1st=Normal, 2nd=Promo)
     pcs_area = re.split(r"(PILIH SATUAN|TERMURAH|PCS|RCG|PCH|PCK)", full_text_single)
     if len(pcs_area) > 1:
-        prices = get_prices(" ".join(pcs_area[1:]))
-        if len(prices) >= 2:
-            res["PCS"]["n"], res["PCS"]["p"] = max(prices[:2]), min(prices[:2])
-        elif len(prices) == 1:
-            res["PCS"]["n"] = res["PCS"]["p"] = prices[0]
+        prices_pcs = get_prices(" ".join(pcs_area[1:]))
+        if len(prices_pcs) >= 2:
+            res["PCS"]["n"], res["PCS"]["p"] = prices_pcs[0], prices_pcs[1]
+        elif len(prices_pcs) == 1:
+            res["PCS"]["n"] = res["PCS"]["p"] = prices_pcs[0]
 
+    # Logika CTN (Urutan: 1st=Normal, 2nd=Promo)
     if "CTN" in full_text_single:
         ctn_part = full_text_single.split("CTN")[-1]
         prices_ctn = get_prices(ctn_part)
-        if prices_ctn:
+        if len(prices_ctn) >= 2:
+            res["CTN"]["n"], res["CTN"]["p"] = prices_ctn[0], prices_ctn[1]
+        elif len(prices_ctn) == 1:
             res["CTN"]["n"] = res["CTN"]["p"] = prices_ctn[0]
 
     # --- D. PROMOSI ---
@@ -219,8 +217,8 @@ if files and m_code and date_inp and week_inp:
                         else: st.warning("⚠️ Code Not Found")
 
                     m1, m2, m3 = st.columns([1, 1, 2])
-                    m1.metric("UNIT", f"{pcs['n']:,} / {pcs['p']:,}")
-                    m2.metric("CTN", f"{ctn['n']:,} / {ctn['p']:,}")
+                    m1.metric("UNIT (Norm/Prom)", f"{pcs['n']:,} / {pcs['p']:,}")
+                    m2.metric("CTN (Norm/Prom)", f"{ctn['n']:,} / {ctn['p']:,}")
                     m3.success(f"**Promo:** {p_desc}")
 
                     if match_code:
@@ -268,4 +266,3 @@ if files and m_code and date_inp and week_inp:
                 st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"{m_code}.zip", use_container_width=True)
     else:
         st.error("Database Excel tidak ditemukan!")
-
