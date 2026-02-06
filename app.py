@@ -27,7 +27,7 @@ def get_base64_image(image_path):
             return base64.b64encode(img_file.read()).decode()
     return None
 
-# --- CSS HEADER (TETAP SESUAI DESAIN ASLI) ---
+# --- CSS HEADER LOTTE (TETAP SAMA) ---
 logo_b64 = get_base64_image("lotte_logo.png")
 st.markdown(f"""
     <style>
@@ -49,78 +49,77 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-# --- FUNGSI PEMBERSIH ---
 def clean_val(s):
     if not s: return 0
-    s = str(s).upper().replace('O','0').replace('S','5').replace('I','1').replace('B','8').replace('L','1').replace('G','6')
+    s = str(s).upper().replace('O','0').replace('S','5').replace('I','1').replace('B','8').replace('L','1')
     res = re.sub(r'[^\d]', '', s)
     return int(res) if res else 0
 
-def get_first_two_prices(text_segment):
-    """Mengambil maksimal 2 angka pertama dari potongan teks"""
-    # Buat teks bersih dari kurung
-    text_segment = re.sub(r'\(.*?\)', ' ', text_segment)
-    # Cari angka 4-15 digit
-    candidates = re.findall(r'[\d\.,OSIBLG]{4,15}', text_segment)
-    
-    extracted = []
-    for c in candidates:
-        val = clean_val(c)
-        if 400 <= val <= 5000000:
-            extracted.append(val)
-    
-    if len(extracted) >= 2: return extracted[0], extracted[1]
-    elif len(extracted) == 1: return extracted[0], extracted[0]
-    return 0, 0
-
-def process_ocr_final(pil_img, master_names):
+def process_ocr_geometry(pil_img, master_names):
     img = np.array(pil_img.convert('RGB'))
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     
-    # OCR - Ambil baris demi baris (PSM 6 untuk layout kolom)
-    raw_data = pytesseract.image_to_string(gray, config='--oem 3 --psm 6')
-    lines = [l.strip().upper() for l in raw_data.split('\n') if l.strip()]
+    # Ambil data OCR beserta koordinat (lebar, tinggi, posisi x, posisi y)
+    d = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT)
+    n_boxes = len(d['text'])
     
-    res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
-    
-    for line in lines:
-        # CEK APAKAH BARIS INI PUNYA INFO HARGA (Ada kata kunci PCS/RCG/BOX atau CTN)
-        if any(kw in line for kw in ["PCS", "RCG", "PCK", "BOX", "PES", "UNIT", "CTN", "CIN", "CASE"]):
-            
-            # STRATEGI POTONG TENGAH: Jika ada CTN di baris yang sama dengan PCS
-            if "CTN" in line or "CIN" in line:
-                # Potong teks jadi dua bagian: SEBELUM CTN dan SESUDAH CTN
-                parts = re.split(r"CTN|CIN", line, maxsplit=1)
-                
-                # Bagian Kiri (Biasanya PCS)
-                pcs_n, pcs_p = get_first_two_prices(parts[0])
-                if pcs_n > 0:
-                    res["PCS"]["n"], res["PCS"]["p"] = pcs_n, pcs_p
-                
-                # Bagian Kanan (Pasti CTN)
-                ctn_n, ctn_p = get_first_two_prices(parts[1])
-                if ctn_n > 0:
-                    res["CTN"]["n"], res["CTN"]["p"] = ctn_n, ctn_p
-            
-            else:
-                # Jika tidak ada kata CTN, tapi ada kata PCS dkk
-                if any(kw in line for kw in ["PCS", "RCG", "PCK", "BOX", "PES", "UNIT"]):
-                    n, p = get_first_two_prices(line)
-                    if n > 0: res["PCS"]["n"], res["PCS"]["p"] = n, p
+    anchors = {"PCS": [], "CTN": []}
+    price_candidates = []
 
-    # Fuzzy Match Nama
-    full_txt = " ".join(lines)
+    for i in range(n_boxes):
+        text = d['text'][i].upper()
+        if not text.strip(): continue
+        
+        # Koordinat tengah box
+        curr_x = d['left'][i] + (d['width'][i] / 2)
+        curr_y = d['top'][i] + (d['height'][i] / 2)
+
+        # 1. Cari Anchor (PCS atau CTN)
+        if any(kw in text for kw in ["PCS", "RCG", "PCK", "BOX", "PES"]):
+            anchors["PCS"].append((curr_x, curr_y))
+        elif any(kw in text for kw in ["CTN", "CIN", "CASE", "KARTON"]):
+            anchors["CTN"].append((curr_x, curr_y))
+        
+        # 2. Cari Angka
+        val = clean_val(text)
+        if 400 <= val <= 5000000:
+            price_candidates.append({'val': val, 'x': curr_x, 'y': curr_y})
+
+    res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
+
+    # Fungsi untuk cari harga terdekat dari anchor
+    def get_closest_prices(anchor_list, candidates):
+        if not anchor_list: return []
+        # Ambil anchor pertama yang ketemu
+        ax, ay = anchor_list[0]
+        # Hitung jarak Euclidean ke semua angka
+        sorted_by_dist = sorted(candidates, key=lambda c: ((c['x']-ax)**2 + (c['y']-ay)**2)**0.5)
+        # Ambil 2 terdekat
+        return [c['val'] for c in sorted_by_dist[:2]]
+
+    pcs_found = get_closest_prices(anchors["PCS"], price_candidates)
+    if len(pcs_found) >= 1:
+        res["PCS"]["n"] = pcs_found[0]
+        res["PCS"]["p"] = pcs_found[1] if len(pcs_found) > 1 else pcs_found[0]
+
+    ctn_found = get_closest_prices(anchors["CTN"], price_candidates)
+    if len(ctn_found) >= 1:
+        res["CTN"]["n"] = ctn_found[0]
+        res["CTN"]["p"] = ctn_found[1] if len(ctn_found) > 1 else ctn_found[0]
+
+    # Matching Nama (Full Text)
+    full_text = " ".join(d['text'])
     best_name = "N/A"
     if master_names:
-        scores = [(fuzz.partial_ratio(str(m).upper(), full_txt), m) for m in master_names]
+        scores = [(fuzz.partial_ratio(str(m).upper(), full_text.upper()), m) for m in master_names]
         best_name = max(scores, key=lambda x: x[0])[1] if scores else "N/A"
 
-    return res["PCS"], res["CTN"], best_name, "\n".join(lines)
+    return res["PCS"], res["CTN"], best_name, full_text
 
-# ================= UI STREAMLIT (LENGKAP) =================
+# ================= UI STREAMLIT =================
 with st.sidebar:
     m_code = st.text_input("📍 MASTER CODE").upper()
-    date_inp = st.text_input("📅 DATE (DDMMYY)").upper()
+    date_inp = st.text_input("📅 DATE").upper()
     week_inp = st.text_input("🗓️ WEEK")
 
 files = st.file_uploader("📂 UPLOAD GAMBAR", accept_multiple_files=True)
@@ -128,16 +127,14 @@ files = st.file_uploader("📂 UPLOAD GAMBAR", accept_multiple_files=True)
 if files and m_code:
     if os.path.exists(FILE_PATH):
         db_ig = pd.read_excel(FILE_PATH, sheet_name=SHEET_MASTER_IG)
-        list_nama_master = db_ig[COL_IG_NAME].dropna().unique().tolist()
+        list_names = db_ig[COL_IG_NAME].dropna().unique().tolist()
         db_targets = {s: pd.read_excel(FILE_PATH, sheet_name=s) for s in SHEETS_TARGET}
         
         final_list, zip_buffer = [], io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED) as zf:
             for f in files:
                 with st.container(border=True):
-                    img_pil = Image.open(f)
-                    pcs, ctn, name, raw_txt = process_ocr_final(img_pil, list_nama_master)
-                    
+                    pcs, ctn, name, raw_txt = process_ocr_geometry(Image.open(f), list_names)
                     st.write(f"### 📄 {f.name}")
                     c1, c2, c3 = st.columns(3)
                     with c1:
@@ -148,10 +145,8 @@ if files and m_code:
                         st.metric("CTN PROMO", f"{ctn['p']:,}")
                     with c3:
                         st.info(f"Produk: {name}")
-
-                    with st.expander("HASIL SCAN"):
-                        st.code(raw_txt)
                     
+                    # Pencarian Prodcode & Simpan
                     match_code = None
                     scores = [(fuzz.partial_ratio(str(row[COL_IG_NAME]).upper(), name), row["PRODCODE"]) for _, row in db_ig.iterrows()]
                     if scores:
@@ -165,7 +160,7 @@ if files and m_code:
                             if not m_row.empty:
                                 final_list.append({"sheet":s_name, "idx":m_row.index[0], "np":pcs['n'], "pp":pcs['p'], "nc":ctn['n'], "pc":ctn['p']})
                                 buf = io.BytesIO()
-                                img_pil.convert("RGB").save(buf, format="JPEG")
+                                Image.open(f).convert("RGB").save(buf, format="JPEG")
                                 zf.writestr(f"{match_code}.jpg", buf.getvalue())
                                 break
 
