@@ -52,50 +52,44 @@ st.markdown(f"""
 
 # --- FUNGSI LOGIKA OCR ---
 def clean_price_val(raw_str):
-    """Membersihkan teks dan memperbaiki salah baca OCR (O=0, S=5, I=1, dll)"""
     if not raw_str: return 0
     s = str(raw_str).upper()
-    # Kamus koreksi karakter yang sering tertukar
+    # Kamus koreksi karakter OCR yang sering salah baca
     s = s.replace('O', '0').replace('S', '5').replace('I', '1').replace('B', '8').replace('G', '6').replace('L', '1')
     clean = re.sub(r'[^\d]', '', s)
     return int(clean) if clean else 0
 
 def get_prices_smart(text_segment):
-    """Logika: Abaikan kurung, abaikan teks setelah / atau ISI"""
     if not text_segment: return []
-    
-    # 1. Hapus teks di dalam kurung (...) beserta kurungnya
+    # 1. HAPUS ISI DALAM KURUNG (Abaikan kalkulasi sistem/harga per unit)
     text_segment = re.sub(r'\(.*?\)', ' ', text_segment)
-    
-    # 2. Ambil hanya bagian sebelum tanda / atau kata ISI
+    # 2. POTONG TEKS setelah tanda / atau kata ISI
     text_segment = re.split(r"/|ISI", text_segment)[0]
-    
-    # 3. Cari deretan angka (Regex ini mengizinkan karakter salah baca untuk ditangkap dulu)
+    # 3. CARI ANGKA (Minimal 4 digit)
     found = re.findall(r"[\d\.,O S I B L G]{4,15}", text_segment)
     
     valid = []
     for f in found:
         val = clean_price_val(f)
-        # Filter range harga masuk akal (400 perak - 5 juta)
         if 400 <= val <= 5000000:
             valid.append(val)
     return valid
 
 def process_ocr_final(pil_image, master_product_names=None):
-    # Pre-processing: Perbesar 2x dan GrayScale untuk akurasi
+    # Pre-processing untuk akurasi: Resize 2x
     w, h = pil_image.size
     img_resized = pil_image.resize((w*2, h*2), Image.Resampling.LANCZOS)
     img_np = cv2.cvtColor(np.array(img_resized), cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
     
-    # OCR
-    raw_data = pytesseract.image_to_string(gray, config='--oem 3 --psm 6')
+    # OCR Config - Menggunakan PSM 11 agar lebih fleksibel mencari teks satuan
+    raw_data = pytesseract.image_to_string(gray, config='--oem 3 --psm 11')
     lines = [l.strip().upper() for l in raw_data.split('\n') if l.strip()]
     full_text = " ".join(lines)
 
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
     
-    # --- PEMISAHAN AREA ---
+    # PEMISAHAN AREA
     if "CTN" in full_text:
         parts = re.split(r"CTN", full_text, maxsplit=1)
         pcs_section = parts[0]
@@ -104,14 +98,14 @@ def process_ocr_final(pil_image, master_product_names=None):
         pcs_section = full_text
         ctn_section = ""
 
-    # Harga PCS (1st=Normal, 2nd=Promo)
+    # Ekstraksi PCS
     prices_pcs = get_prices_smart(pcs_section)
     if len(prices_pcs) >= 2:
         res["PCS"]["n"], res["PCS"]["p"] = prices_pcs[0], prices_pcs[1]
     elif len(prices_pcs) == 1:
         res["PCS"]["n"] = res["PCS"]["p"] = prices_pcs[0]
 
-    # Harga CTN (1st=Normal, 2nd=Promo)
+    # Ekstraksi CTN
     if ctn_section:
         prices_ctn = get_prices_smart(ctn_section)
         if len(prices_ctn) >= 2:
@@ -119,7 +113,7 @@ def process_ocr_final(pil_image, master_product_names=None):
         elif len(prices_ctn) == 1:
             res["CTN"]["n"] = res["CTN"]["p"] = prices_ctn[0]
 
-    # Fuzzy Match Nama Produk
+    # Fuzzy Match Nama
     prod_name = "N/A"
     if master_product_names:
         scores = [(fuzz.partial_ratio(str(m).upper(), full_text), m) for m in master_product_names]
@@ -127,7 +121,6 @@ def process_ocr_final(pil_image, master_product_names=None):
             best = max(scores, key=lambda x: x[0])
             if best[0] > 70: prod_name = best[1]
 
-    # Deteksi Promo (Mekanisme)
     promo_desc = "-"
     m_promo = re.search(r"(BELI\s\d+\sGRATIS\s\d+|MIN\.\sBELI\s\d+)", full_text)
     if m_promo: promo_desc = m_promo.group(0)
@@ -148,7 +141,6 @@ files = st.file_uploader("📂 UPLOAD GAMBAR", type=["jpg", "png", "jpeg"], acce
 
 if files and m_code and date_inp and week_inp:
     if os.path.exists(FILE_PATH):
-        # Load Database
         db_ig = pd.read_excel(FILE_PATH, sheet_name=SHEET_MASTER_IG)
         db_targets = {s: pd.read_excel(FILE_PATH, sheet_name=s) for s in SHEETS_TARGET}
         list_nama_master = db_ig[COL_IG_NAME].dropna().unique().tolist()
@@ -161,7 +153,6 @@ if files and m_code and date_inp and week_inp:
                     img_pil = Image.open(f)
                     pcs, ctn, name, raw_txt, enhanced_img, p_desc = process_ocr_final(img_pil, list_nama_master)
                     
-                    # Match Product Code dari database IG
                     match_code = None
                     scores = [(fuzz.partial_ratio(str(row[COL_IG_NAME]).upper(), name), row["PRODCODE"]) for _, row in db_ig.iterrows()]
                     if scores:
@@ -194,9 +185,9 @@ if files and m_code and date_inp and week_inp:
                                     "sheet": s_name, "idx": m_row.index[0], "p_desc": p_desc,
                                     "np": pcs['n'], "pp": pcs['p'], "nc": ctn['n'], "pc": ctn['p']
                                 })
-                                # Simpan foto yang diproses ke ZIP
+                                # FIX OSERROR: Convert RGBA to RGB for JPEG compatibility
                                 buf = io.BytesIO()
-                                img_pil.save(buf, format="JPEG")
+                                img_pil.convert("RGB").save(buf, format="JPEG")
                                 zf.writestr(f"{match_code}.jpg", buf.getvalue())
                                 break
                 gc.collect()
@@ -226,9 +217,8 @@ if files and m_code and date_inp and week_inp:
                 wb.save(FILE_PATH)
                 st.success("✅ DATABASE BERHASIL DIUPDATE!")
                 
-                # Sediakan tombol download setelah update
                 with open(FILE_PATH, "rb") as f_excel:
-                    st.download_button("📥 DOWNLOAD EXCEL HASIL", f_excel, f"RESULT_W{week_inp}_{date_inp}.xlsx", use_container_width=True)
+                    st.download_button("📥 DOWNLOAD EXCEL HASIL", f_excel, f"PRICING_W{week_inp}_{date_inp}.xlsx", use_container_width=True)
                 st.download_button("🖼️ DOWNLOAD ZIP BUKTI FOTO", zip_buffer.getvalue(), f"BUKTI_W{week_inp}.zip", use_container_width=True)
     else:
-        st.error(f"File {FILE_PATH} tidak ditemukan. Pastikan folder 'database' ada.")
+        st.error(f"File {FILE_PATH} tidak ditemukan.")
