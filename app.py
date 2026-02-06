@@ -28,7 +28,7 @@ def get_base64_image(image_path):
             return base64.b64encode(img_file.read()).decode()
     return None
 
-# --- CSS CUSTOM: FIXED HEADER & SIDEBAR ---
+# --- CSS CUSTOM ---
 logo_b64 = get_base64_image("lotte_logo.png")
 st.markdown(f"""
     <style>
@@ -83,7 +83,6 @@ def process_ocr_final(pil_image, master_product_names=None):
     df_ocr = df_ocr[df_ocr['text'].str.strip() != ""]
     df_ocr['text'] = df_ocr['text'].str.upper()
 
-    # Sort berdasarkan urutan baca (Top ke Bottom, Left ke Right)
     df_ocr = df_ocr.sort_values(by=['top', 'left'])
     lines_data = []
     if not df_ocr.empty:
@@ -132,8 +131,12 @@ def process_ocr_final(pil_image, master_product_names=None):
                 draw.rectangle([0, y_coord - 5, pil_image.width, y_coord + h_box + 5], fill="white")
                 break
 
-    # --- C. SMART PRICE DETECTION (UPDATED) ---
+    # --- C. SMART PRICE DETECTION (STOP AT / OR ISI) ---
     def get_prices(text_segment):
+        # Stop pembacaan jika bertemu tanda / atau kata ISI
+        # Regex mencari angka sebelum tanda tersebut
+        text_segment = re.split(r"/|ISI", text_segment)[0]
+        
         found = re.findall(r"(?:RP|R9|BP|RD|P)?\s?([\d\.,]{4,9})", text_segment)
         valid = []
         for f in found:
@@ -141,16 +144,17 @@ def process_ocr_final(pil_image, master_product_names=None):
             if 500 < val < 2000000: valid.append(val)
         return valid
 
-    # Logika PCS (Urutan: 1st=Normal, 2nd=Promo)
+    # Logika PCS
     pcs_area = re.split(r"(PILIH SATUAN|TERMURAH|PCS|RCG|PCH|PCK)", full_text_single)
     if len(pcs_area) > 1:
+        # Mengambil bagian teks setelah pemicu, lalu diproses get_prices
         prices_pcs = get_prices(" ".join(pcs_area[1:]))
         if len(prices_pcs) >= 2:
             res["PCS"]["n"], res["PCS"]["p"] = prices_pcs[0], prices_pcs[1]
         elif len(prices_pcs) == 1:
             res["PCS"]["n"] = res["PCS"]["p"] = prices_pcs[0]
 
-    # Logika CTN (Urutan: 1st=Normal, 2nd=Promo)
+    # Logika CTN
     if "CTN" in full_text_single:
         ctn_part = full_text_single.split("CTN")[-1]
         prices_ctn = get_prices(ctn_part)
@@ -217,8 +221,8 @@ if files and m_code and date_inp and week_inp:
                         else: st.warning("⚠️ Code Not Found")
 
                     m1, m2, m3 = st.columns([1, 1, 2])
-                    m1.metric("UNIT (Norm/Prom)", f"{pcs['n']:,} / {pcs['p']:,}")
-                    m2.metric("CTN (Norm/Prom)", f"{ctn['n']:,} / {ctn['p']:,}")
+                    m1.metric("UNIT (1st/2nd)", f"{pcs['n']:,} / {pcs['p']:,}")
+                    m2.metric("CTN (1st/2nd)", f"{ctn['n']:,} / {ctn['p']:,}")
                     m3.success(f"**Promo:** {p_desc}")
 
                     if match_code:
