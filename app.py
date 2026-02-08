@@ -224,8 +224,8 @@ if files and m_code and date_inp and week_inp:
                         else: st.warning("⚠️ Code Not Found")
 
                     m1, m2, m3 = st.columns([1, 1, 2])
-                    m1.metric("PCS (N/P)", f"{pcs['n']:,} / {pcs['p']:,}")
-                    m2.metric("CTN (N/P)", f"{ctn['n']:,} / {ctn['p']:,}")
+                    m1.metric("UNIT", f"{pcs['n']:,} / {pcs['p']:,}")
+                    m2.metric("CTN", f"{ctn['n']:,} / {ctn['p']:,}")
                     m3.success(f"**Promo:** {p_desc}")
 
                     if match_code:
@@ -239,7 +239,7 @@ if files and m_code and date_inp and week_inp:
                                     "n_pcs": pcs['n'], "p_pcs": pcs['p'], "n_ctn": ctn['n'], "p_ctn": ctn['p'], "p_desc": p_desc
                                 })
                                 buf = io.BytesIO()
-                                red_img.convert("RGB").save(buf, format="JPEG", quality=85)
+                                red_img.convert("RGB").save(buf, format="JPEG")
                                 zf.writestr(f"{match_code}.jpg", buf.getvalue())
                                 break
                 gc.collect()
@@ -267,7 +267,10 @@ if files and m_code and date_inp and week_inp:
                                 ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
                     wb.save(FILE_PATH)
                     st.success("✅ DATABASE UPDATED!")
+                    with open(FILE_PATH, "rb") as f:
+                        st.download_button("📥 DOWNLOAD EXCEL", f, f"PRICE CHECK W{week_inp}_{date_inp}.xlsx", use_container_width=True)
             with col_btn2:
-                st.download_button("🖼️ DOWNLOAD ZIP", zip_buffer.getvalue(), f"{m_code}_{date_inp}.zip", use_container_width=True)
+                st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"{m_code}.zip", use_container_width=True)
     else:
         st.error("Database Excel tidak ditemukan!")
+
