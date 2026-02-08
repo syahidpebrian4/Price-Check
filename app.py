@@ -28,9 +28,8 @@ def get_base64_image(image_path):
             return base64.b64encode(img_file.read()).decode()
     return None
 
-# --- CSS CUSTOM: FIXED HEADER & SIDEBAR MERAH PERMANEN ---
+# --- CSS CUSTOM ---
 logo_b64 = get_base64_image("lotte_logo.png")
-
 st.markdown(f"""
     <style>
         .custom-header {{
@@ -67,10 +66,13 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-# --- FUNGSI LOGIKA OCR (SESUAI KODE ASLI ANDA) ---
+# --- FUNGSI LOGIKA OCR ---
 def clean_price_val(raw_str):
     if not raw_str: return 0
-    clean = re.sub(r'[^\d]', '', str(raw_str))
+    # Repair table untuk karakter yang sering salah baca di Tesseract
+    table = str.maketrans('OISBEGZA', '01588624')
+    text = str(raw_str).upper().translate(table)
+    clean = re.sub(r'[^\d]', '', text)
     return int(clean) if clean else 0
 
 def process_ocr_final(pil_image, master_product_names=None):
@@ -79,11 +81,13 @@ def process_ocr_final(pil_image, master_product_names=None):
     img_resized = cv2.resize(img_np, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
     
+    # OCR Tesseract
     d = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT, config=r'--oem 3 --psm 6')
     df_ocr = pd.DataFrame(d)
     df_ocr = df_ocr[df_ocr['text'].str.strip() != ""]
     df_ocr['text'] = df_ocr['text'].str.upper()
 
+    # Reconstruct lines (Grouping per baris)
     df_ocr = df_ocr.sort_values(by=['top', 'left'])
     lines_data = []
     if not df_ocr.empty:
@@ -101,18 +105,16 @@ def process_ocr_final(pil_image, master_product_names=None):
                 current_top = row['top']
             else:
                 temp_words.append({'text': row['text'], 'left': row['left'], 'height': row['height']})
-        temp_words.sort(key=lambda x: x['left'])
         lines_data.append({"text": " ".join([w['text'] for w in temp_words]), "top": current_top, "h": 10})
 
     lines_txt = [l['text'] for l in lines_data]
-    full_text_single = " ".join(lines_txt)
-    raw_ocr_output = "\n".join(lines_txt)
+    full_text_single = " # ".join(lines_txt)
 
     prod_name, promo_desc = "N/A", "-"
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
     draw = ImageDraw.Draw(pil_image)
 
-    # --- A. NAMA PRODUK (GLOBAL SEARCH) ---
+    # --- A. NAMA PRODUK ---
     if master_product_names:
         best_match, highest_score = "N/A", 0
         for ref_name in master_product_names:
@@ -130,36 +132,50 @@ def process_ocr_final(pil_image, master_product_names=None):
             if y_coord < (pil_image.height * 0.3):
                 h_box = min(lines_data[i]['h'] / scale, 40)
                 draw.rectangle([0, y_coord - 5, pil_image.width, y_coord + h_box + 5], fill="white")
-                if prod_name == "N/A":
-                    p_name_parts = []
-                    for j in range(i + 1, min(i + 4, len(lines_txt))):
-                        if any(k in lines_txt[j] for k in ["PILIH", "SATUAN", "HARGA", "RP"]): break
-                        p_name_parts.append(lines_txt[j])
-                    prod_name = " ".join(p_name_parts).strip()
                 break
 
-    # --- C. SMART PRICE DETECTION (KODE ASLI ANDA) ---
-    def get_prices(text_segment):
-        found = re.findall(r"(?:RP|R9|BP|RD|P)?\s?([\d\.,]{4,9})", text_segment)
-        valid = []
-        for f in found:
-            val = clean_price_val(f)
-            if 500 < val < 2000000: valid.append(val)
-        return valid
+    # --- C. SMART PRICE DETECTION (LOGIKA EASYOCR DALAM TESSERACT) ---
+    def extract_prices_logic(text_segment):
+        # Bersihkan noise teks agar tidak mengganggu regex
+        text_segment = re.sub(r'\(.*?\)|ISI\s*\d+', '', text_segment)
+        # Pecah berdasarkan simbol mata uang atau variasinya
+        found_segments = re.split(r'RP|R9|BP|RD|P|R\s', text_segment)
+        
+        found_prices = []
+        for segment in found_segments:
+            nums = re.findall(r'\d[\d\.,]+', segment)
+            if nums:
+                val = clean_price_val(nums[0])
+                if 500 < val < 2000000:
+                    found_prices.append(val)
+        
+        if not found_prices: return {"n": 0, "p": 0}
+        # Logika: Index 0 = Normal, Index 1 = Promo
+        n = found_prices[0]
+        p = found_prices[1] if len(found_prices) >= 2 else found_prices[0]
+        return {"n": n, "p": p}
 
-    pcs_area = re.split(r"(PILIH SATUAN|TERMURAH|PCS|RCG|PCH|PCK)", full_text_single)
-    if len(pcs_area) > 1:
-        prices = get_prices(" ".join(pcs_area[1:]))
-        if len(prices) >= 2:
-            res["PCS"]["n"], res["PCS"]["p"] = max(prices[:2]), min(prices[:2])
-        elif len(prices) == 1:
-            res["PCS"]["n"] = res["PCS"]["p"] = prices[0]
+    # Cari Area PCS
+    idx_pcs = -1
+    for i, line in enumerate(lines_txt):
+        if any(k in line for k in ["PILIH SATUAN", "PCS", "RCG", "BOX", "PCK"]):
+            idx_pcs = i
+            break
+    if idx_pcs != -1:
+        segment = " # ".join(lines_txt[idx_pcs : idx_pcs + 3])
+        res_pcs = extract_prices_logic(segment)
+        res["PCS"]["n"], res["PCS"]["p"] = res_pcs["n"], res_pcs["p"]
 
-    if "CTN" in full_text_single:
-        ctn_part = full_text_single.split("CTN")[-1]
-        prices_ctn = get_prices(ctn_part)
-        if prices_ctn:
-            res["CTN"]["n"] = res["CTN"]["p"] = prices_ctn[0]
+    # Cari Area CTN
+    idx_ctn = -1
+    for i, line in enumerate(lines_txt):
+        if any(k in line for k in ["CTN", "KARTON", "DUS"]):
+            idx_ctn = i
+            break
+    if idx_ctn != -1:
+        segment = " # ".join(lines_txt[idx_ctn : idx_ctn + 3])
+        res_ctn = extract_prices_logic(segment)
+        res["CTN"]["n"], res["CTN"]["p"] = res_ctn["n"], res_ctn["p"]
 
     # --- D. PROMOSI ---
     anchor_promo = "MAU LEBIH UNTUNG? CEK MEKANISME PROMO BERIKUT"
@@ -168,15 +184,14 @@ def process_ocr_final(pil_image, master_product_names=None):
             promo_lines = [lines_txt[j] for j in range(i + 1, min(i + 3, len(lines_txt)))]
             full_promo_txt = " ".join(promo_lines)
             promo_split = full_promo_txt.split("=")[0].strip()
-            promo_clean = re.sub(r'\bRAP\b', '', promo_split).replace("|", "").strip()
-            promo_desc = re.sub(r'^[^A-Z0-9]+', '', promo_clean)
+            promo_desc = re.sub(r'^[^A-Z0-9]+', '', promo_split).replace("|", "").strip()
             break
     
     if promo_desc == "-":
         m_promo = re.search(r"(BELI\s\d+\sGRATIS\s\d+|MIN\.\sBELI\s\d+)", full_text_single)
         if m_promo: promo_desc = m_promo.group(0)
 
-    return res["PCS"], res["CTN"], prod_name, raw_ocr_output, pil_image, promo_desc
+    return res["PCS"], res["CTN"], prod_name, "\n".join(lines_txt), pil_image, promo_desc
 
 # ================= UI STREAMLIT =================
 def norm(val):
@@ -219,8 +234,8 @@ if files and m_code and date_inp and week_inp:
                         else: st.warning("⚠️ Code Not Found")
 
                     m1, m2, m3 = st.columns([1, 1, 2])
-                    m1.metric("UNIT", f"{pcs['n']:,} / {pcs['p']:,}")
-                    m2.metric("CTN", f"{ctn['n']:,} / {ctn['p']:,}")
+                    m1.metric("UNIT (N/P)", f"{pcs['n']:,} / {pcs['p']:,}")
+                    m2.metric("CTN (N/P)", f"{ctn['n']:,} / {ctn['p']:,}")
                     m3.success(f"**Promo:** {p_desc}")
 
                     if match_code:
@@ -234,7 +249,7 @@ if files and m_code and date_inp and week_inp:
                                     "n_pcs": pcs['n'], "p_pcs": pcs['p'], "n_ctn": ctn['n'], "p_ctn": ctn['p'], "p_desc": p_desc
                                 })
                                 buf = io.BytesIO()
-                                red_img.convert("RGB").save(buf, format="JPEG")
+                                red_img.convert("RGB").save(buf, format="JPEG", quality=85)
                                 zf.writestr(f"{match_code}.jpg", buf.getvalue())
                                 break
                 gc.collect()
@@ -262,9 +277,7 @@ if files and m_code and date_inp and week_inp:
                                 ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
                     wb.save(FILE_PATH)
                     st.success("✅ DATABASE UPDATED!")
-                    with open(FILE_PATH, "rb") as f:
-                        st.download_button("📥 DOWNLOAD EXCEL", f, f"PRICE CHECK W{week_inp}_{date_inp}.xlsx", use_container_width=True)
             with col_btn2:
-                st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"{m_code}.zip", use_container_width=True)
+                st.download_button("🖼️ DOWNLOAD ZIP", zip_buffer.getvalue(), f"{m_code}_{date_inp}.zip", use_container_width=True)
     else:
         st.error("Database Excel tidak ditemukan!")
