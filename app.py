@@ -69,7 +69,6 @@ st.markdown(f"""
 # --- FUNGSI LOGIKA OCR ---
 def clean_price_val(raw_str):
     if not raw_str: return 0
-    # Repair table untuk karakter yang sering salah baca di Tesseract
     table = str.maketrans('OISBEGZA', '01588624')
     text = str(raw_str).upper().translate(table)
     clean = re.sub(r'[^\d]', '', text)
@@ -87,7 +86,7 @@ def process_ocr_final(pil_image, master_product_names=None):
     df_ocr = df_ocr[df_ocr['text'].str.strip() != ""]
     df_ocr['text'] = df_ocr['text'].str.upper()
 
-    # Reconstruct lines (Grouping per baris)
+    # Reconstruct lines
     df_ocr = df_ocr.sort_values(by=['top', 'left'])
     lines_data = []
     if not df_ocr.empty:
@@ -134,12 +133,11 @@ def process_ocr_final(pil_image, master_product_names=None):
                 draw.rectangle([0, y_coord - 5, pil_image.width, y_coord + h_box + 5], fill="white")
                 break
 
-    # --- C. SMART PRICE DETECTION (LOGIKA EASYOCR DALAM TESSERACT) ---
-    def extract_prices_logic(text_segment):
-        # Bersihkan noise teks agar tidak mengganggu regex
-        text_segment = re.sub(r'\(.*?\)|ISI\s*\d+', '', text_segment)
-        # Pecah berdasarkan simbol mata uang atau variasinya
-        found_segments = re.split(r'RP|R9|BP|RD|P|R\s', text_segment)
+    # --- C. SMART PRICE DETECTION (FIXED URUTAN RP & BYPASS HARGA TERMURAH) ---
+    def extract_prices_from_line(line_text):
+        # Bersihkan info isi agar angka tidak tercampur
+        line_text = re.sub(r'\(.*?\)|ISI\s*\d+', '', line_text)
+        found_segments = re.split(r'RP|R9|BP|RD|P|R\s', line_text)
         
         found_prices = []
         for segment in found_segments:
@@ -150,32 +148,24 @@ def process_ocr_final(pil_image, master_product_names=None):
                     found_prices.append(val)
         
         if not found_prices: return {"n": 0, "p": 0}
-        # Logika: Index 0 = Normal, Index 1 = Promo
+        # Logika: Harga pertama = Normal, Harga kedua = Promo
         n = found_prices[0]
         p = found_prices[1] if len(found_prices) >= 2 else found_prices[0]
         return {"n": n, "p": p}
 
-    # Cari Area PCS
-    idx_pcs = -1
-    for i, line in enumerate(lines_txt):
-        if any(k in line for k in ["PILIH SATUAN", "PCS", "RCG", "BOX", "PCK"]):
-            idx_pcs = i
+    # Cari baris spesifik PCS
+    for line in lines_txt:
+        if any(k in line for k in ["PCS", "RCG", "BOX", "PCK"]) and "RP" in line:
+            res_pcs = extract_prices_from_line(line)
+            res["PCS"]["n"], res["PCS"]["p"] = res_pcs["n"], res_pcs["p"]
             break
-    if idx_pcs != -1:
-        segment = " # ".join(lines_txt[idx_pcs : idx_pcs + 3])
-        res_pcs = extract_prices_logic(segment)
-        res["PCS"]["n"], res["PCS"]["p"] = res_pcs["n"], res_pcs["p"]
 
-    # Cari Area CTN
-    idx_ctn = -1
-    for i, line in enumerate(lines_txt):
-        if any(k in line for k in ["CTN", "KARTON", "DUS"]):
-            idx_ctn = i
+    # Cari baris spesifik CTN
+    for line in lines_txt:
+        if any(k in line for k in ["CTN", "KARTON", "DUS"]) and "RP" in line:
+            res_ctn = extract_prices_from_line(line)
+            res["CTN"]["n"], res["CTN"]["p"] = res_ctn["n"], res_ctn["p"]
             break
-    if idx_ctn != -1:
-        segment = " # ".join(lines_txt[idx_ctn : idx_ctn + 3])
-        res_ctn = extract_prices_logic(segment)
-        res["CTN"]["n"], res["CTN"]["p"] = res_ctn["n"], res_ctn["p"]
 
     # --- D. PROMOSI ---
     anchor_promo = "MAU LEBIH UNTUNG? CEK MEKANISME PROMO BERIKUT"
@@ -234,7 +224,7 @@ if files and m_code and date_inp and week_inp:
                         else: st.warning("⚠️ Code Not Found")
 
                     m1, m2, m3 = st.columns([1, 1, 2])
-                    m1.metric("UNIT (N/P)", f"{pcs['n']:,} / {pcs['p']:,}")
+                    m1.metric("PCS (N/P)", f"{pcs['n']:,} / {pcs['p']:,}")
                     m2.metric("CTN (N/P)", f"{ctn['n']:,} / {ctn['p']:,}")
                     m3.success(f"**Promo:** {p_desc}")
 
