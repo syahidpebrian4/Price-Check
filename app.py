@@ -252,8 +252,8 @@ if files and m_code and date_inp and week_inp:
                     wb = load_workbook(FILE_PATH)
                     for r in final_list:
                         ws = wb[r['sheet']]
-                        headers = [str(c.value).strip() for c in ws[1]]
-                        row_num = r['index'] + 2
+                        headers = [str(c.value).strip() for c in ws[3]]
+                        row_num = r['index'] + 5
                         def empty_if_zero(val): return val if val != 0 else None
                         mapping = {
                             "Normal Competitor Price (Pcs)": empty_if_zero(r['n_pcs']),
@@ -273,4 +273,5 @@ if files and m_code and date_inp and week_inp:
                 st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"{m_code}.zip", use_container_width=True)
     else:
         st.error("Database Excel tidak ditemukan!")
+
 
