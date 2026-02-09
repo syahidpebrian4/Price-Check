@@ -111,6 +111,17 @@ def process_ocr_final(pil_image, master_product_names=None):
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
     draw = ImageDraw.Draw(pil_image)
 
+    # --- TAMBAHAN: LOGIKA SENSOR ---
+    anchor_nav = "SEMUA KATEGORI"
+    for i, line in enumerate(lines_txt):
+        if fuzz.partial_ratio(anchor_nav, line) > 65:
+            y_coord = lines_data[i]['top'] / scale
+            if y_coord < (pil_image.height * 0.3):
+                h_box = min(lines_data[i]['h'] / scale, 40)
+                draw.rectangle([0, y_coord - 5, pil_image.width, y_coord + h_box + 5], fill="white")
+                break
+    # -------------------------------
+
     if master_product_names:
         best_match, highest_score = "N/A", 0
         for ref_name in master_product_names:
@@ -180,7 +191,6 @@ if files and m_code and date_inp and week_inp:
         db_ig = pd.read_excel(FILE_PATH, sheet_name=SHEET_MASTER_IG)
         db_targets = {}
         for s in SHEETS_TARGET:
-            # Baris 3 Header (Index 2 di Pandas)
             df_tmp = pd.read_excel(FILE_PATH, sheet_name=s, header=2)
             df_tmp.columns = [str(c).strip().upper() for c in df_tmp.columns]
             db_targets[s] = df_tmp
@@ -237,11 +247,7 @@ if files and m_code and date_inp and week_inp:
                     wb = load_workbook(FILE_PATH)
                     for r in final_list:
                         ws = wb[r['sheet']]
-                        # Baris 3 Header asli
                         headers = [str(cell.value).strip().upper() if cell.value else "" for cell in ws[3]]
-                        
-                        # Data sekarang mulai di baris 4 karena baris "sampah" sudah dihapus
-                        # Index 0 di Pandas = Baris 4 di Excel
                         row_num = r['index'] + 4
                         
                         def empty_if_zero(val): return val if val != 0 else None
