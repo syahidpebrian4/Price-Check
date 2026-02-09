@@ -12,6 +12,7 @@ import zipfile
 from fuzzywuzzy import fuzz
 import gc
 import base64
+import time
 
 # ================= CONFIG & DATABASE =================
 FILE_PATH = "database/master_harga.xlsx"
@@ -109,8 +110,7 @@ def process_ocr_final(pil_image, master_product_names=None):
 
     prod_name, promo_desc = "N/A", "-"
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
-    draw = ImageDraw.Draw(pil_image)
-
+    
     if master_product_names:
         best_match, highest_score = "N/A", 0
         for ref_name in master_product_names:
@@ -176,93 +176,110 @@ with st.sidebar:
 files = st.file_uploader("📂 UPLOAD GAMBAR", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
 if files and m_code and date_inp and week_inp:
-    if os.path.exists(FILE_PATH):
-        db_ig = pd.read_excel(FILE_PATH, sheet_name=SHEET_MASTER_IG)
-        db_targets = {}
-        for s in SHEETS_TARGET:
-            # Baris 3 Header (Index 2 di Pandas)
-            df_tmp = pd.read_excel(FILE_PATH, sheet_name=s, header=2)
-            df_tmp.columns = [str(c).strip().upper() for c in df_tmp.columns]
-            db_targets[s] = df_tmp
+    try:
+        if os.path.exists(FILE_PATH):
+            # Membaca database utama
+            db_ig = pd.read_excel(FILE_PATH, sheet_name=SHEET_MASTER_IG, engine='openpyxl')
+            db_targets = {}
+            for s in SHEETS_TARGET:
+                # Header di Baris 3 (Index 2)
+                df_tmp = pd.read_excel(FILE_PATH, sheet_name=s, header=2, engine='openpyxl')
+                df_tmp.columns = [str(c).strip().upper() for c in df_tmp.columns]
+                db_targets[s] = df_tmp
 
-        list_nama_master = db_ig[COL_IG_NAME].dropna().unique().tolist()
-        final_list, zip_buffer = [], io.BytesIO()
-        
-        with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED) as zf:
-            for f in files:
-                with st.container(border=True):
-                    img_pil = Image.open(f)
-                    pcs, ctn, name, raw_txt, red_img, p_desc = process_ocr_final(img_pil, list_nama_master)
-                    
-                    match_code, best_score = None, 0
-                    for _, row in db_ig.iterrows():
-                        db_name = str(row[COL_IG_NAME]).upper()
-                        score = fuzz.partial_ratio(db_name, name)
-                        if score > 75 and score > best_score:
-                            best_score, match_code = score, norm(row["PRODCODE"])
-                    
-                    st.markdown(f"### 📄 {f.name}")
-                    c1, c2 = st.columns([2, 1])
-                    with c1: st.markdown(f"**OCR Name:** `{name}`")
-                    with c2: 
-                        if match_code: st.info(f"**Matched Code:** `{match_code}`")
-                        else: st.warning("⚠️ Code Not Found")
-
-                    m1, m2, m3 = st.columns([1, 1, 2])
-                    m1.metric("UNIT", f"{pcs['n']:,} / {pcs['p']:,}")
-                    m2.metric("CTN", f"{ctn['n']:,} / {ctn['p']:,}")
-                    m3.success(f"**Promo:** {p_desc}")
-
-                    if match_code:
-                        for s_name, df_t in db_targets.items():
-                            if "PRODCODE" in df_t.columns and "MASTER CODE" in df_t.columns:
-                                match_row = df_t[(df_t["PRODCODE"].astype(str).apply(norm) == match_code) & 
-                                                 (df_t["MASTER CODE"].astype(str).apply(norm) == norm(m_code))]
-                                if not match_row.empty:
-                                    final_list.append({
-                                        "prodcode": match_code, "sheet": s_name, "index": match_row.index[0],
-                                        "n_pcs": pcs['n'], "p_pcs": pcs['p'], "n_ctn": ctn['n'], "p_ctn": ctn['p'], "p_desc": p_desc
-                                    })
-                                    buf = io.BytesIO()
-                                    red_img.convert("RGB").save(buf, format="JPEG")
-                                    zf.writestr(f"{match_code}.jpg", buf.getvalue())
-                                    break
-                gc.collect()
-
-        if final_list:
-            st.divider()
-            col_btn1, col_btn2 = st.columns(2)
-            with col_btn1:
-                if st.button("🚀 UPDATE DATABASE", use_container_width=True):
-                    wb = load_workbook(FILE_PATH)
-                    for r in final_list:
-                        ws = wb[r['sheet']]
-                        # Baris 3 Header asli
-                        headers = [str(cell.value).strip().upper() if cell.value else "" for cell in ws[3]]
+            list_nama_master = db_ig[COL_IG_NAME].dropna().unique().tolist()
+            final_list, zip_buffer = [], io.BytesIO()
+            
+            with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED) as zf:
+                for f in files:
+                    with st.container(border=True):
+                        img_pil = Image.open(f)
+                        pcs, ctn, name, raw_txt, red_img, p_desc = process_ocr_final(img_pil, list_nama_master)
                         
-                        # Data sekarang mulai di baris 4 karena baris "sampah" sudah dihapus
-                        # Index 0 di Pandas = Baris 4 di Excel
-                        row_num = r['index'] + 4
+                        match_code, best_score = None, 0
+                        for _, row in db_ig.iterrows():
+                            db_name = str(row[COL_IG_NAME]).upper()
+                            score = fuzz.partial_ratio(db_name, name)
+                            if score > 75 and score > best_score:
+                                best_score, match_code = score, norm(row["PRODCODE"])
                         
-                        def empty_if_zero(val): return val if val != 0 else None
-                        mapping = {
-                            "NORMAL COMPETITOR PRICE (PCS)": empty_if_zero(r['n_pcs']),
-                            "PROMO COMPETITOR PRICE (PCS)": empty_if_zero(r['p_pcs']),
-                            "NORMAL COMPETITOR PRICE (CTN)": empty_if_zero(r['n_ctn']),
-                            "PROMO COMPETITOR PRICE (CTN)": empty_if_zero(r['p_ctn']),
-                            "PROMOSI COMPETITOR": r['p_desc'] if r['p_desc'] != "-" else None
-                        }
-                        
-                        for col_name, val in mapping.items():
-                            if col_name in headers:
-                                col_idx = headers.index(col_name) + 1
-                                ws.cell(row=row_num, column=col_idx).value = val
+                        st.markdown(f"### 📄 {f.name}")
+                        c1, c2 = st.columns([2, 1])
+                        with c1: st.markdown(f"**OCR Name:** `{name}`")
+                        with c2: 
+                            if match_code: st.info(f"**Matched Code:** `{match_code}`")
+                            else: st.warning("⚠️ Code Not Found")
+
+                        m1, m2, m3 = st.columns([1, 1, 2])
+                        m1.metric("UNIT", f"{pcs['n']:,} / {pcs['p']:,}")
+                        m2.metric("CTN", f"{ctn['n']:,} / {ctn['p']:,}")
+                        m3.success(f"**Promo:** {p_desc}")
+
+                        if match_code:
+                            for s_name, df_t in db_targets.items():
+                                if "PRODCODE" in df_t.columns and "MASTER CODE" in df_t.columns:
+                                    match_row = df_t[(df_t["PRODCODE"].astype(str).apply(norm) == match_code) & 
+                                                     (df_t["MASTER CODE"].astype(str).apply(norm) == norm(m_code))]
+                                    if not match_row.empty:
+                                        final_list.append({
+                                            "prodcode": match_code, "sheet": s_name, "index": match_row.index[0],
+                                            "n_pcs": pcs['n'], "p_pcs": pcs['p'], "n_ctn": ctn['n'], "p_ctn": ctn['p'], "p_desc": p_desc
+                                        })
+                                        buf = io.BytesIO()
+                                        red_img.convert("RGB").save(buf, format="JPEG")
+                                        zf.writestr(f"{match_code}.jpg", buf.getvalue())
+                                        break
+                    gc.collect()
+
+            if final_list:
+                st.divider()
+                col_btn1, col_btn2 = st.columns(2)
+                with col_btn1:
+                    if st.button("🚀 UPDATE DATABASE", use_container_width=True):
+                        try:
+                            # Gunakan data_only=False agar rumus tidak hilang
+                            wb = load_workbook(FILE_PATH)
+                            for r in final_list:
+                                ws = wb[r['sheet']]
+                                headers = [str(cell.value).strip().upper() if cell.value else "" for cell in ws[3]]
                                 
-                    wb.save(FILE_PATH)
-                    st.success("✅ DATABASE UPDATED!")
-                    with open(FILE_PATH, "rb") as f:
-                        st.download_button("📥 DOWNLOAD EXCEL", f, f"PRICE_CHECK_W{week_inp}_{date_inp}.xlsx", use_container_width=True)
-            with col_btn2:
-                st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"{m_code}_{date_inp}.zip", use_container_width=True)
-    else:
-        st.error("Database Excel tidak ditemukan!")
+                                # Data mulai Baris 4 (karena baris kosong sdh dihapus)
+                                # Index 0 di Pandas = Baris 4 di Excel
+                                row_num = r['index'] + 4 
+                                
+                                def empty_if_zero(val): return val if val != 0 else None
+                                mapping = {
+                                    "NORMAL COMPETITOR PRICE (PCS)": empty_if_zero(r['n_pcs']),
+                                    "PROMO COMPETITOR PRICE (PCS)": empty_if_zero(r['p_pcs']),
+                                    "NORMAL COMPETITOR PRICE (CTN)": empty_if_zero(r['n_ctn']),
+                                    "PROMO COMPETITOR PRICE (CTN)": empty_if_zero(r['p_ctn']),
+                                    "PROMOSI COMPETITOR": r['p_desc'] if r['p_desc'] != "-" else None
+                                }
+                                for col_name, val in mapping.items():
+                                    if col_name in headers:
+                                        col_idx = headers.index(col_name) + 1
+                                        ws.cell(row=row_num, column=col_idx).value = val
+                            
+                            wb.save(FILE_PATH)
+                            st.toast("Database Berhasil Di-update!", icon="✅")
+                            time.sleep(1)
+                            st.rerun()
+                        except PermissionError:
+                            st.error("❌ Tutup file Excel Anda dulu!")
+                        except KeyError as e:
+                            st.error(f"❌ Struktur Excel Corrupt (Pivot Error). Lakukan 'Save As' pada file Excel Anda.")
+                        except Exception as e:
+                            st.error(f"❌ Gagal Simpan: {e}")
+
+                    if os.path.exists(FILE_PATH):
+                        with open(FILE_PATH, "rb") as f:
+                            st.download_button("📥 DOWNLOAD EXCEL", f, f"PRICE_CHECK_W{week_inp}_{date_inp}.xlsx", use_container_width=True)
+
+                with col_btn2:
+                    st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"{m_code}_{date_inp}.zip", use_container_width=True)
+        else:
+            st.error("File database/master_harga.xlsx tidak ditemukan!")
+    except Exception as e:
+        st.error(f"❌ Error Sistem: {e}")
+
+# Next step: Jalankan aplikasi dan pastikan file Excel tidak sedang terbuka.
