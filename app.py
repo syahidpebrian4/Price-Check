@@ -80,13 +80,11 @@ def process_ocr_final(pil_image, master_product_names=None):
     img_resized = cv2.resize(img_np, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
     
-    # OCR Tesseract
     d = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT, config=r'--oem 3 --psm 6')
     df_ocr = pd.DataFrame(d)
     df_ocr = df_ocr[df_ocr['text'].str.strip() != ""]
     df_ocr['text'] = df_ocr['text'].str.upper()
 
-    # Reconstruct lines
     df_ocr = df_ocr.sort_values(by=['top', 'left'])
     lines_data = []
     if not df_ocr.empty:
@@ -113,7 +111,6 @@ def process_ocr_final(pil_image, master_product_names=None):
     res = {"PCS": {"n": 0, "p": 0}, "CTN": {"n": 0, "p": 0}}
     draw = ImageDraw.Draw(pil_image)
 
-    # --- A. NAMA PRODUK ---
     if master_product_names:
         best_match, highest_score = "N/A", 0
         for ref_name in master_product_names:
@@ -123,22 +120,9 @@ def process_ocr_final(pil_image, master_product_names=None):
                 highest_score, best_match = score, m_name
         prod_name = best_match
 
-    # --- B. SENSOR (REDACT) ---
-    anchor_nav = "SEMUA KATEGORI"
-    for i, line in enumerate(lines_txt):
-        if fuzz.partial_ratio(anchor_nav, line) > 65:
-            y_coord = lines_data[i]['top'] / scale
-            if y_coord < (pil_image.height * 0.3):
-                h_box = min(lines_data[i]['h'] / scale, 40)
-                draw.rectangle([0, y_coord - 5, pil_image.width, y_coord + h_box + 5], fill="white")
-                break
-
-    # --- C. SMART PRICE DETECTION (FIXED URUTAN RP & BYPASS HARGA TERMURAH) ---
     def extract_prices_from_line(line_text):
-        # Bersihkan info isi agar angka tidak tercampur
         line_text = re.sub(r'\(.*?\)|ISI\s*\d+', '', line_text)
         found_segments = re.split(r'RP|R9|BP|RD|P|R\s', line_text)
-        
         found_prices = []
         for segment in found_segments:
             nums = re.findall(r'\d[\d\.,]+', segment)
@@ -146,28 +130,23 @@ def process_ocr_final(pil_image, master_product_names=None):
                 val = clean_price_val(nums[0])
                 if 500 < val < 2000000:
                     found_prices.append(val)
-        
         if not found_prices: return {"n": 0, "p": 0}
-        # Logika: Harga pertama = Normal, Harga kedua = Promo
         n = found_prices[0]
         p = found_prices[1] if len(found_prices) >= 2 else found_prices[0]
         return {"n": n, "p": p}
 
-    # Cari baris spesifik PCS
     for line in lines_txt:
-        if any(k in line for k in ["PCS", "RCG", "BOX", "PCK"]) and "RP" in line:
+        if any(k in line for k in ["PCS", "RCG", "BOX", "PCK", "PCH", "BTL", "UNIT"]) and "RP" in line:
             res_pcs = extract_prices_from_line(line)
             res["PCS"]["n"], res["PCS"]["p"] = res_pcs["n"], res_pcs["p"]
             break
 
-    # Cari baris spesifik CTN
     for line in lines_txt:
         if any(k in line for k in ["CTN", "KARTON", "DUS"]) and "RP" in line:
             res_ctn = extract_prices_from_line(line)
             res["CTN"]["n"], res["CTN"]["p"] = res_ctn["n"], res_ctn["p"]
             break
 
-    # --- D. PROMOSI ---
     anchor_promo = "MAU LEBIH UNTUNG? CEK MEKANISME PROMO BERIKUT"
     for i, line in enumerate(lines_txt):
         if anchor_promo in line:
@@ -199,7 +178,13 @@ files = st.file_uploader("📂 UPLOAD GAMBAR", type=["jpg", "png", "jpeg"], acce
 if files and m_code and date_inp and week_inp:
     if os.path.exists(FILE_PATH):
         db_ig = pd.read_excel(FILE_PATH, sheet_name=SHEET_MASTER_IG)
-        db_targets = {s: pd.read_excel(FILE_PATH, sheet_name=s) for s in SHEETS_TARGET}
+        db_targets = {}
+        for s in SHEETS_TARGET:
+            # Baris 3 Header (Index 2 di Pandas)
+            df_tmp = pd.read_excel(FILE_PATH, sheet_name=s, header=2)
+            df_tmp.columns = [str(c).strip().upper() for c in df_tmp.columns]
+            db_targets[s] = df_tmp
+
         list_nama_master = db_ig[COL_IG_NAME].dropna().unique().tolist()
         final_list, zip_buffer = [], io.BytesIO()
         
@@ -230,18 +215,18 @@ if files and m_code and date_inp and week_inp:
 
                     if match_code:
                         for s_name, df_t in db_targets.items():
-                            df_t.columns = df_t.columns.astype(str).str.strip()
-                            match_row = df_t[(df_t["PRODCODE"].astype(str).apply(norm) == match_code) & 
-                                             (df_t["MASTER Code"].astype(str).apply(norm) == norm(m_code))]
-                            if not match_row.empty:
-                                final_list.append({
-                                    "prodcode": match_code, "sheet": s_name, "index": match_row.index[0],
-                                    "n_pcs": pcs['n'], "p_pcs": pcs['p'], "n_ctn": ctn['n'], "p_ctn": ctn['p'], "p_desc": p_desc
-                                })
-                                buf = io.BytesIO()
-                                red_img.convert("RGB").save(buf, format="JPEG")
-                                zf.writestr(f"{match_code}.jpg", buf.getvalue())
-                                break
+                            if "PRODCODE" in df_t.columns and "MASTER CODE" in df_t.columns:
+                                match_row = df_t[(df_t["PRODCODE"].astype(str).apply(norm) == match_code) & 
+                                                 (df_t["MASTER CODE"].astype(str).apply(norm) == norm(m_code))]
+                                if not match_row.empty:
+                                    final_list.append({
+                                        "prodcode": match_code, "sheet": s_name, "index": match_row.index[0],
+                                        "n_pcs": pcs['n'], "p_pcs": pcs['p'], "n_ctn": ctn['n'], "p_ctn": ctn['p'], "p_desc": p_desc
+                                    })
+                                    buf = io.BytesIO()
+                                    red_img.convert("RGB").save(buf, format="JPEG")
+                                    zf.writestr(f"{match_code}.jpg", buf.getvalue())
+                                    break
                 gc.collect()
 
         if final_list:
@@ -252,27 +237,32 @@ if files and m_code and date_inp and week_inp:
                     wb = load_workbook(FILE_PATH)
                     for r in final_list:
                         ws = wb[r['sheet']]
-                        headers = [str(c.value).strip() for c in ws[3]]
+                        # Baris 3 Header asli
+                        headers = [str(cell.value).strip().upper() if cell.value else "" for cell in ws[3]]
+                        
+                        # Data sekarang mulai di baris 4 karena baris "sampah" sudah dihapus
+                        # Index 0 di Pandas = Baris 4 di Excel
                         row_num = r['index'] + 4
+                        
                         def empty_if_zero(val): return val if val != 0 else None
                         mapping = {
-                            "Normal Competitor Price (Pcs)": empty_if_zero(r['n_pcs']),
-                            "Promo Competitor Price (Pcs)": empty_if_zero(r['p_pcs']),
-                            "Normal Competitor Price (Ctn)": empty_if_zero(r['n_ctn']),
-                            "Promo Competitor Price (Ctn)": empty_if_zero(r['p_ctn']),
-                            "Promosi Competitor": r['p_desc'] if r['p_desc'] != "-" else None
+                            "NORMAL COMPETITOR PRICE (PCS)": empty_if_zero(r['n_pcs']),
+                            "PROMO COMPETITOR PRICE (PCS)": empty_if_zero(r['p_pcs']),
+                            "NORMAL COMPETITOR PRICE (CTN)": empty_if_zero(r['n_ctn']),
+                            "PROMO COMPETITOR PRICE (CTN)": empty_if_zero(r['p_ctn']),
+                            "PROMOSI COMPETITOR": r['p_desc'] if r['p_desc'] != "-" else None
                         }
+                        
                         for col_name, val in mapping.items():
                             if col_name in headers:
-                                ws.cell(row=row_num, column=headers.index(col_name) + 1).value = val
+                                col_idx = headers.index(col_name) + 1
+                                ws.cell(row=row_num, column=col_idx).value = val
+                                
                     wb.save(FILE_PATH)
                     st.success("✅ DATABASE UPDATED!")
                     with open(FILE_PATH, "rb") as f:
-                        st.download_button("📥 DOWNLOAD EXCEL", f, f"PRICE CHECK W{week_inp}_{date_inp}.xlsx", use_container_width=True)
+                        st.download_button("📥 DOWNLOAD EXCEL", f, f"PRICE_CHECK_W{week_inp}_{date_inp}.xlsx", use_container_width=True)
             with col_btn2:
-                st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"{m_code}.zip", use_container_width=True)
+                st.download_button("🖼️ DOWNLOAD FOTO", zip_buffer.getvalue(), f"{m_code}_{date_inp}.zip", use_container_width=True)
     else:
         st.error("Database Excel tidak ditemukan!")
-
-
-
