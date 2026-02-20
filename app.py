@@ -95,7 +95,6 @@ def process_ocr_minimal(pil_image, master_product_names=None):
     full_text_single = " # ".join(lines_txt)
     draw = ImageDraw.Draw(pil_image)
 
-    # Sensor
     anchor_nav = "SEMUA KATEGORI"
     for i, line in enumerate(lines_txt):
         if fuzz.partial_ratio(anchor_nav, line) > 65:
@@ -187,8 +186,8 @@ with st.sidebar:
 if menu == "📸 Image":
     st.subheader("📸 Image")
     with st.sidebar:
-        m_code = st.text_input("📍 MASTER CODE:", placeholder="Contoh: 6001").upper()
-        date_inp = st.text_input("🗓️ DATE:", placeholder="Contoh: 01JAN2026").upper()
+        m_code = st.text_input("📍 MASTER CODE:", placeholder="6001").upper()
+        date_inp = st.text_input("🗓️ DATE:", placeholder="01JAN2026").upper()
 
     files = st.file_uploader("UPLOAD GAMBAR", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
     
@@ -203,7 +202,6 @@ if menu == "📸 Image":
                     with st.container(border=True):
                         img_pil = Image.open(f)
                         name, red_img = process_ocr_minimal(img_pil, list_nama_master)
-                        
                         match_code = None
                         match_row = db_ig[db_ig[COL_IG_NAME].str.upper() == name]
                         if not match_row.empty:
@@ -229,9 +227,9 @@ if menu == "📸 Image":
 elif menu == "🏷️ Price":
     st.subheader("🏷️ Price")
     with st.sidebar:
-        mc_sync = st.text_input("📍 MASTER CODE:", placeholder="Contoh: 06001")
-        date_inp_p = st.text_input("🗓️ DATE:", placeholder="Contoh: 01JAN2026").upper()
-        week_inp = st.text_input("📅 WEEK:", placeholder="Contoh: 1").upper()
+        mc_sync = st.text_input("📍 MASTER CODE:", placeholder="06001")
+        date_inp_p = st.text_input("🗓️ DATE_P:", placeholder="01JAN2026").upper()
+        week_inp = st.text_input("📅 WEEK:", placeholder="1").upper()
 
     urls_area = st.text_area("Paste URLs (satu per baris):", height=200)
 
@@ -239,21 +237,22 @@ elif menu == "🏷️ Price":
         if not urls_area or not mc_sync:
             st.error("Lengkapi URL dan Master Code!")
         else:
+            # --- KONFIGURASI DRIVER YANG KEBAL ERROR SERVER ---
             chrome_options = Options()
-            # AUTO-CONFIG: Mencoba port debugging jika di lokal, jika gagal pakai headless (untuk server)
+            chrome_options.add_argument("--headless") # Wajib untuk server
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument("--disable-gpu")
+            
             try:
-                chrome_options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
-            except:
-                chrome_options.add_argument("--headless")
-                chrome_options.add_argument("--no-sandbox")
-                chrome_options.add_argument("--disable-dev-shm-usage")
-
-            try:
-                driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+                # Driver manager otomatis menangani versi
+                service = Service(ChromeDriverManager().install())
+                driver = webdriver.Chrome(service=service, options=chrome_options)
+                
                 all_results = []
                 list_urls = [u.strip() for u in urls_area.split('\n') if u.strip()]
-                
                 prog = st.progress(0)
+                
                 for i, url in enumerate(list_urls):
                     driver.get(url)
                     time.sleep(4)
@@ -275,11 +274,12 @@ elif menu == "🏷️ Price":
                 
                 count = update_excel_database(df_scrape, mc_sync)
                 if count > 0:
-                    st.success(f"🔥 Berhasil update {count} baris di database!")
+                    st.success(f"🔥 Berhasil update {count} baris!")
                     with open(DB_PATH, "rb") as f:
                         st.download_button("📥 DOWNLOAD EXCEL", f, f"PRICE_CHECK_W{week_inp}_{date_inp_p}.xlsx", use_container_width=True)
                 else:
-                    st.warning("Tidak ada data yang cocok dengan PRODCODE di database.")
+                    st.warning("Data tidak cocok dengan PRODCODE di database.")
                 driver.quit()
+                
             except Exception as e:
-                st.error(f"Gagal menjalankan Scraper. Pastikan Chrome aktif atau Library lengkap. Error: {e}")
+                st.error(f"Gagal Scraper. Pastikan packages.txt sudah ada. Error: {e}")
