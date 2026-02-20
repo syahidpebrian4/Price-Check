@@ -187,8 +187,8 @@ with st.sidebar:
 if menu == "📸 Image":
     st.subheader("📸 Image")
     with st.sidebar:
-        m_code = st.text_input("📍 MASTER CODE").upper()
-        date_inp = st.text_input("🗓️ DATE (misal: 01JAN2026)").upper()
+        m_code = st.text_input("📍 MASTER CODE:", placeholder="Contoh: 6001").upper()
+        date_inp = st.text_input("🗓️ DATE:", placeholder="Contoh: 01JAN2026").upper()
 
     files = st.file_uploader("UPLOAD GAMBAR", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
     
@@ -231,8 +231,8 @@ elif menu == "🏷️ Price":
     st.subheader("🏷️ Price")
     with st.sidebar:
         mc_sync = st.text_input("📍 MASTER CODE:", placeholder="Contoh: 06001")
-        date_inp = st.text_input("🗓️ DATE (misal: 01JAN2026)").upper()
-        week_inp = st.text_input("📅 WEEK (misal: 1)").upper()
+        date_inp = st.text_input("🗓️ DATE:", placeholder="Contoh: 01JAN2026").upper()
+        week_inp = st.text_input("📅 WEEK:", placeholder="Contoh: 1").upper()
 
     urls_area = st.text_area("Paste URLs (satu per baris):", height=200)
 
@@ -277,5 +277,6 @@ elif menu == "🏷️ Price":
                     st.warning("Tidak ada data yang cocok dengan PRODCODE di database.")
             except Exception as e:
                 st.error(f"Pastikan Chrome Debugging Mode Aktif! Error: {e}")
+
 
 
