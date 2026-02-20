@@ -1,8 +1,11 @@
 streamlit
 pytesseract
 opencv-python-headless
+numpy
 pandas
-openpyxl
-Pillow
+pillow
 fuzzywuzzy
 python-Levenshtein
+selenium
+webdriver-manager
+openpyxl
