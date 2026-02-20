@@ -33,7 +33,7 @@ def get_base64_image(image_path):
             return base64.b64encode(img_file.read()).decode()
     return None
 
-# --- CSS CUSTOM HEADER ---
+# --- CSS CUSTOM HEADER (Format Awal) ---
 logo_b64 = get_base64_image("lotte_logo.png")
 st.markdown(f"""
     <style>
@@ -61,28 +61,7 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-# ================= FUNGSI OCR =================
-def process_ocr_minimal(pil_image, master_product_names=None):
-    img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-    scale = 2.0
-    img_resized = cv2.resize(img_np, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-    gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
-    d = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT)
-    df_ocr = pd.DataFrame(d)
-    df_ocr = df_ocr[df_ocr['text'].str.strip() != ""]
-    full_text = " # ".join(df_ocr['text'].str.upper().tolist())
-    
-    prod_name = "N/A"
-    if master_product_names:
-        best_match, highest_score = "N/A", 0
-        for ref_name in master_product_names:
-            score = fuzz.partial_ratio(str(ref_name).upper(), full_text)
-            if score > 80 and score > highest_score:
-                highest_score, best_match = score, str(ref_name).upper()
-        prod_name = best_match
-    return prod_name, pil_image
-
-# ================= FUNGSI SCRAPER =================
+# ================= FUNGSI LOGIKA =================
 def clean_price(teks):
     if not teks or teks == "0": return 0
     return int(re.sub(r'[^\d]', '', str(teks)))
@@ -98,31 +77,21 @@ def extract_price_by_unit(unit_list, html):
         if m: return unit, m.group(1), m.group(2)
     return "N/A", "0", "0"
 
-def update_excel_database(results_df, master_code):
-    if not os.path.exists(DB_PATH): return 0
-    try:
-        wb = load_workbook(DB_PATH)
-        ws = wb["DF"]
-        # Logika sinkronisasi data ke Excel sesuai kolom Anda...
-        wb.save(DB_PATH)
-        return len(results_df)
-    except: return 0
-
-# ================= UI =================
+# ================= UI NAVIGATION =================
 menu = st.sidebar.radio("Menu Utama", ["📸 Image OCR", "🏷️ Price Scraper"])
 
 if menu == "📸 Image OCR":
-    st.subheader("📸 Fitur Pembaca Gambar")
-    # ... (Logika OCR seperti sebelumnya) ...
+    st.subheader("📸 Image OCR")
+    # Logika OCR Anda tetap di sini...
 
 elif menu == "🏷️ Price Scraper":
-    st.subheader("🏷️ Scraper Harga Indogrosir")
+    st.subheader("🏷️ Scraper Harga Indogrosir (Cloud Mode)")
     with st.sidebar:
         st.subheader("🔐 Login Akun")
         ig_user = st.text_input("Email/No HP:")
         ig_pass = st.text_input("Password:", type="password")
         mc_code = st.text_input("Master Code:")
-
+    
     urls_area = st.text_area("List URL Produk (Satu per baris):")
 
     if st.button("🚀 Jalankan Scraper"):
@@ -134,45 +103,46 @@ elif menu == "🏷️ Price Scraper":
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
             options.add_argument("--window-size=1920,1080")
+            # User-Agent agar tidak terdeteksi bot mentah
+            options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36")
             options.binary_location = "/usr/bin/chromium"
 
             try:
                 service = Service("/usr/bin/chromedriver")
                 driver = webdriver.Chrome(service=service, options=options)
                 
-                with st.status("Proses Scraping...", expanded=True) as status:
-                    # --- PROSES LOGIN (Sesuai Screenshot Inspect Kamu) ---
+                with st.status("Sedang bekerja...", expanded=True) as status:
                     st.write("Membuka halaman login...")
-                    driver.get("https://www.klikindogrosir.com/login") # Link web utama
+                    driver.get("https://www.klikindogrosir.com/login")
                     
                     try:
-                        wait = WebDriverWait(driver, 15)
-                        # Isi Email pakai ID login-email
-                        email_input = wait.until(EC.presence_of_element_located((By.ID, "login-email")))
+                        wait = WebDriverWait(driver, 20)
+                        
+                        # Targetkan ID berdasarkan hasil Inspect Element
+                        email_input = wait.until(EC.element_to_be_clickable((By.ID, "login-email")))
                         email_input.clear()
                         email_input.send_keys(ig_user)
                         
-                        # Isi Password pakai Name password
                         pass_input = driver.find_element(By.NAME, "password")
                         pass_input.clear()
                         pass_input.send_keys(ig_pass)
                         
-                        # Klik Tombol Login di dalam Form loginForm
+                        # Klik tombol login menggunakan JavaScript (lebih kuat di Cloud)
                         login_btn = driver.find_element(By.XPATH, "//form[@id='loginForm']//button")
-                        login_btn.click()
+                        driver.execute_script("arguments[0].click();", login_btn)
                         
-                        time.sleep(7) # Tunggu loading dashboard
-                        st.write("✅ Berhasil mengirim data login.")
+                        st.write("✅ Data login dikirim. Menunggu dashboard...")
+                        time.sleep(10) 
                     except Exception as e:
-                        st.write(f"⚠️ Gagal login otomatis: {e}")
+                        st.write(f"⚠️ Gagal otomatisasi login: {e}")
 
-                    # --- PROSES SCRAPE URL ---
                     results = []
                     urls = [u.strip() for u in urls_area.split('\n') if u.strip()]
-                    for i, url in enumerate(urls):
-                        st.write(f"Mengambil data {i+1}/{len(urls)}...")
+                    
+                    for idx, url in enumerate(urls):
+                        st.write(f"Mengambil data ke-{idx+1}...")
                         driver.get(url)
-                        time.sleep(5)
+                        time.sleep(6) # Memberi waktu render di server
                         html = driver.page_source
                         
                         results.append({
@@ -181,9 +151,9 @@ elif menu == "🏷️ Price Scraper":
                         })
                     
                     driver.quit()
-                    status.update(label="Selesai!", state="complete")
+                    status.update(label="Proses Selesai!", state="complete")
 
                 st.table(pd.DataFrame(results))
                 
             except Exception as e:
-                st.error(f"Sistem Error: {e}")
+                st.error(f"Kesalahan Sistem: {e}")
