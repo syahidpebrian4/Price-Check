@@ -23,7 +23,7 @@ DB_PATH = "database/master_harga.xlsx"
 SHEET_MASTER_IG = "IG"
 COL_IG_NAME = "PRODNAME_IG"
 
-st.set_page_config(page_title="Price Intel Tool", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Price Check", layout="wide", initial_sidebar_state="expanded")
 
 # --- HELPER: LOGO BASE64 ---
 def get_base64_image(image_path):
@@ -56,7 +56,7 @@ st.markdown(f"""
     </style>
     <div class="custom-header">
         <img src="data:image/png;base64,{logo_b64 if logo_b64 else ''}" class="header-logo">
-        <h1 class="header-title">PRICE INTEL SYSTEM</h1>
+        <h1 class="header-title">PRICE CHECK</h1>
     </div>
 """, unsafe_allow_html=True)
 
@@ -181,14 +181,14 @@ def update_excel_database(results_df, master_code):
 # ================= MAIN APP NAVIGATION =================
 with st.sidebar:
     st.title("MENU UTAMA")
-    menu = st.radio("Pilih Fitur:", ["📸 OCR Image Processor", "🌐 Web Scraper & Sync"])
+    menu = st.radio("Pilih Fitur:", ["📸 Image", "🏷️ Price"])
     st.divider()
 
-if menu == "📸 OCR Image Processor":
-    st.subheader("📸 OCR Sensing & Image Renaming")
+if menu == "📸 Image":
+    st.subheader("📸 Image")
     with st.sidebar:
         m_code = st.text_input("📍 MASTER CODE").upper()
-        date_inp = st.text_input("📅 DATE (misal: 20FEB)").upper()
+        date_inp = st.text_input("🗓️ DATE (misal: 01JAN2026)").upper()
 
     files = st.file_uploader("UPLOAD GAMBAR", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
     
@@ -227,11 +227,13 @@ if menu == "📸 OCR Image Processor":
         else:
             st.error("Database Excel tidak ditemukan!")
 
-elif menu == "🌐 Web Scraper & Sync":
-    st.subheader("🌐 Indogrosir Scraper & DB Integrator")
+elif menu == "🏷️ Price":
+    st.subheader("🏷️ Price")
     with st.sidebar:
-        mc_sync = st.text_input("TARGET MASTER CODE:", placeholder="Contoh: MC001")
+        mc_sync = st.text_input("📍 MASTER CODE:", placeholder="Contoh: 06001")
         urls_area = st.text_area("Paste URLs (satu per baris):", height=200)
+        date_inp = st.text_input("🗓️ DATE (misal: 01JAN2026)").upper()
+        week_inp = st.text_input("📅 WEEK (misal: 1)").upper()
 
     if st.button("🚀 Jalankan Scraper"):
         if not urls_area or not mc_sync:
@@ -268,8 +270,10 @@ elif menu == "🌐 Web Scraper & Sync":
                 if count > 0:
                     st.success(f"🔥 Berhasil update {count} baris di database!")
                     with open(DB_PATH, "rb") as f:
-                        st.download_button("📥 Download Updated DB", f, "master_harga_updated.xlsx")
+                        st.download_button("📥 DOWNLOAD EXCEL", f, f"PRICE_CHECK_W{week_inp}_{date_inp}.xlsx", use_container_width=True)
+
                 else:
                     st.warning("Tidak ada data yang cocok dengan PRODCODE di database.")
             except Exception as e:
                 st.error(f"Pastikan Chrome Debugging Mode Aktif! Error: {e}")
+
