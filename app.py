@@ -204,7 +204,6 @@ if menu == "📸 Image":
                         img_pil = Image.open(f)
                         name, red_img = process_ocr_minimal(img_pil, list_nama_master)
                         
-                        # Cari Code
                         match_code = None
                         match_row = db_ig[db_ig[COL_IG_NAME].str.upper() == name]
                         if not match_row.empty:
@@ -231,7 +230,7 @@ elif menu == "🏷️ Price":
     st.subheader("🏷️ Price")
     with st.sidebar:
         mc_sync = st.text_input("📍 MASTER CODE:", placeholder="Contoh: 06001")
-        date_inp = st.text_input("🗓️ DATE:", placeholder="Contoh: 01JAN2026").upper()
+        date_inp_p = st.text_input("🗓️ DATE:", placeholder="Contoh: 01JAN2026").upper()
         week_inp = st.text_input("📅 WEEK:", placeholder="Contoh: 1").upper()
 
     urls_area = st.text_area("Paste URLs (satu per baris):", height=200)
@@ -241,7 +240,14 @@ elif menu == "🏷️ Price":
             st.error("Lengkapi URL dan Master Code!")
         else:
             chrome_options = Options()
-            chrome_options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
+            # AUTO-CONFIG: Mencoba port debugging jika di lokal, jika gagal pakai headless (untuk server)
+            try:
+                chrome_options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
+            except:
+                chrome_options.add_argument("--headless")
+                chrome_options.add_argument("--no-sandbox")
+                chrome_options.add_argument("--disable-dev-shm-usage")
+
             try:
                 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
                 all_results = []
@@ -271,12 +277,9 @@ elif menu == "🏷️ Price":
                 if count > 0:
                     st.success(f"🔥 Berhasil update {count} baris di database!")
                     with open(DB_PATH, "rb") as f:
-                        st.download_button("📥 DOWNLOAD EXCEL", f, f"PRICE_CHECK_W{week_inp}_{date_inp}.xlsx", use_container_width=True)
-
+                        st.download_button("📥 DOWNLOAD EXCEL", f, f"PRICE_CHECK_W{week_inp}_{date_inp_p}.xlsx", use_container_width=True)
                 else:
                     st.warning("Tidak ada data yang cocok dengan PRODCODE di database.")
+                driver.quit()
             except Exception as e:
-                st.error(f"Pastikan Chrome Debugging Mode Aktif! Error: {e}")
-
-
-
+                st.error(f"Gagal menjalankan Scraper. Pastikan Chrome aktif atau Library lengkap. Error: {e}")
