@@ -231,9 +231,10 @@ elif menu == "🏷️ Price":
     st.subheader("🏷️ Price")
     with st.sidebar:
         mc_sync = st.text_input("📍 MASTER CODE:", placeholder="Contoh: 06001")
-        urls_area = st.text_area("Paste URLs (satu per baris):", height=200)
         date_inp = st.text_input("🗓️ DATE (misal: 01JAN2026)").upper()
         week_inp = st.text_input("📅 WEEK (misal: 1)").upper()
+
+    urls_area = st.text_area("Paste URLs (satu per baris):", height=200)
 
     if st.button("🚀 Jalankan Scraper"):
         if not urls_area or not mc_sync:
@@ -276,4 +277,5 @@ elif menu == "🏷️ Price":
                     st.warning("Tidak ada data yang cocok dengan PRODCODE di database.")
             except Exception as e:
                 st.error(f"Pastikan Chrome Debugging Mode Aktif! Error: {e}")
+
 
