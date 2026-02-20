@@ -18,6 +18,11 @@ from webdriver_manager.chrome import ChromeDriverManager
 from openpyxl import load_workbook
 from selenium.webdriver.common.by import By
 
+# ================= INITIAL CHECK =================
+# Cek apakah folder database ada agar tidak langsung Crash
+if not os.path.exists("database"):
+    os.makedirs("database")
+
 # ================= CONFIG & PATHS =================
 DB_PATH = "database/master_harga.xlsx"
 SHEET_MASTER_IG = "IG"
@@ -41,32 +46,11 @@ st.markdown(f"""
     </style>
     <div class="custom-header">
         <img src="data:image/png;base64,{logo_b64 if logo_b64 else ''}" class="header-logo">
-        <h1 style="color:black; margin:0;">PRICE CHECK</h1>
+        <h1 style="color:black; margin:0; font-family: sans-serif;">PRICE CHECK</h1>
     </div>
 """, unsafe_allow_html=True)
 
-# --- FUNGSI OCR ---
-def process_ocr_minimal(pil_image, master_product_names=None):
-    img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-    scale = 2.0
-    img_resized = cv2.resize(img_np, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-    gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
-    d = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT)
-    df_ocr = pd.DataFrame(d)
-    df_ocr = df_ocr[df_ocr['text'].str.strip() != ""]
-    full_text = " # ".join(df_ocr['text'].str.upper().tolist())
-    
-    prod_name = "N/A"
-    if master_product_names:
-        best_match, highest_score = "N/A", 0
-        for ref_name in master_product_names:
-            score = fuzz.partial_ratio(str(ref_name).upper(), full_text)
-            if score > 80 and score > highest_score:
-                highest_score, best_match = score, str(ref_name).upper()
-        prod_name = best_match
-    return prod_name, pil_image
-
-# --- FUNGSI SCRAPER ---
+# --- FUNGSI LOGIKA ---
 def clean_price(teks):
     if not teks or teks == "0": return 0
     return int(re.sub(r'[^\d]', '', str(teks)))
@@ -75,73 +59,75 @@ def extract_product_name(html):
     match = re.search(r'<meta\s+property="og:title"\s+content="(.*?)"', html)
     return match.group(1).split('|')[0].strip() if match else "N/A"
 
-def extract_price_by_unit(unit_list, html):
-    for unit in unit_list:
-        p = fr'{unit}\s*-\s*.*?Rp([\d\.,]+).*?Rp([\d\.,]+)'
-        m = re.search(p, html, re.DOTALL | re.IGNORECASE)
-        if m: return unit, m.group(1), m.group(2)
-    return "N/A", "0", "0"
-
-def update_excel_database(results_df, master_code):
-    if not os.path.exists(DB_PATH): return 0
-    try:
-        wb = load_workbook(DB_PATH)
-        ws = wb["DF"]
-        df_ig = pd.read_excel(DB_PATH, sheet_name="IG")
-        # Logika update baris sesuai PRODCODE...
-        wb.save(DB_PATH)
-        return len(results_df)
-    except: return 0
-
-# --- UI NAVIGATION ---
+# --- UI ---
 menu = st.sidebar.radio("Menu", ["📸 Image", "🏷️ Price"])
 
 if menu == "📸 Image":
-    m_code = st.sidebar.text_input("MASTER CODE")
-    date_p = st.sidebar.text_input("DATE")
-    files = st.file_uploader("Upload", accept_multiple_files=True)
-    if files and st.button("Proses OCR"):
-        db_ig = pd.read_excel(DB_PATH, sheet_name="IG")
-        list_master = db_ig[COL_IG_NAME].tolist()
-        for f in files:
-            name, _ = process_ocr_minimal(Image.open(f), list_master)
-            st.write(f"Hasil: {name}")
+    st.subheader("📸 Image OCR Process")
+    if not os.path.exists(DB_PATH):
+        st.error(f"File {DB_PATH} tidak ditemukan di GitHub!")
+    else:
+        m_code = st.sidebar.text_input("MASTER CODE")
+        files = st.file_uploader("Upload Gambar", accept_multiple_files=True)
+        if files and st.button("Jalankan OCR"):
+            st.info("Sedang memproses...")
 
 elif menu == "🏷️ Price":
+    st.subheader("🏷️ Price Scraper (Cloud Mode)")
     with st.sidebar:
-        st.subheader("Login Indogrosir")
-        user_ig = st.text_input("Email")
-        pass_ig = st.text_input("Password", type="password")
-        mc = st.text_input("Master Code")
+        user_ig = st.text_input("User Indogrosir")
+        pass_ig = st.text_input("Pass Indogrosir", type="password")
+        mc_sync = st.text_input("Master Code")
     
-    urls = st.text_area("URLs")
+    urls_area = st.text_area("Paste URLs (per baris)")
+    
     if st.button("🚀 Jalankan Scraper"):
-        options = Options()
-        options.add_argument("--headless") # Wajib di Cloud
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-        try:
-            # PROSES LOGIN OTOMATIS
-            driver.get("https://www.indogrosir.co.id/login")
-            time.sleep(3)
-            driver.find_element(By.NAME, "username").send_keys(user_ig)
-            driver.find_element(By.NAME, "password").send_keys(pass_ig)
-            driver.find_element(By.XPATH, "//button[@type='submit']").click()
-            time.sleep(5)
+        if not user_ig or not pass_ig:
+            st.error("Masukkan User & Pass Indogrosir!")
+        else:
+            # KONFIGURASI DRIVER CLOUD
+            options = Options()
+            options.add_argument("--headless")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--window-size=1920,1080")
             
-            # PROSES SCRAPE
-            results = []
-            for url in urls.split('\n'):
-                if url.strip():
-                    driver.get(url.strip())
+            try:
+                with st.spinner("Menyiapkan Chrome di Server..."):
+                    service = Service(ChromeDriverManager().install())
+                    driver = webdriver.Chrome(service=service, options=options)
+                
+                # LOGIN PROCESS
+                st.info("Mencoba login...")
+                driver.get("https://www.indogrosir.co.id/login")
+                time.sleep(3)
+                
+                try:
+                    driver.find_element(By.NAME, "username").send_keys(user_ig)
+                    driver.find_element(By.NAME, "password").send_keys(pass_ig)
+                    driver.find_element(By.XPATH, "//button[@type='submit']").click()
+                    time.sleep(5)
+                    st.success("Sesi Login Aktif")
+                except:
+                    st.warning("Tombol login tidak ditemukan, mencoba lanjut scraping...")
+
+                # SCRAPING PROCESS
+                results = []
+                list_urls = [u.strip() for u in urls_area.split('\n') if u.strip()]
+                prog = st.progress(0)
+                
+                for i, url in enumerate(list_urls):
+                    driver.get(url)
                     time.sleep(4)
                     html = driver.page_source
                     results.append({
                         "Nama Produk": extract_product_name(html),
-                        "Satuan Normal": clean_price(extract_price_by_unit(["PCS"], html)[1])
+                        "URL": url
                     })
-            st.table(pd.DataFrame(results))
-        finally:
-            driver.quit()
+                    prog.progress((i + 1) / len(list_urls))
+                
+                st.table(pd.DataFrame(results))
+                driver.quit()
+                
+            except Exception as e:
+                st.error(f"Terjadi kesalahan teknis: {str(e)}")
