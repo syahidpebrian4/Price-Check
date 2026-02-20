@@ -1,1 +1,4 @@
+chromium-chromedriver
+chromium
 tesseract-ocr
+libtesseract-dev
