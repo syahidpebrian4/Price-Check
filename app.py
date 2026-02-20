@@ -174,7 +174,7 @@ def update_excel_database(results_df, master_code):
         wb.save(DB_PATH)
         return success_count
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error Update Excel: {e}")
         return 0
 
 # ================= MAIN APP NAVIGATION =================
@@ -237,15 +237,15 @@ elif menu == "🏷️ Price":
         if not urls_area or not mc_sync:
             st.error("Lengkapi URL dan Master Code!")
         else:
-            # --- KONFIGURASI DRIVER YANG KEBAL ERROR SERVER ---
+            # --- KONFIGURASI JENDELA CHROME TERBUKA (NON-HEADLESS) ---
             chrome_options = Options()
-            chrome_options.add_argument("--headless") # Wajib untuk server
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            chrome_options.add_argument("--disable-gpu")
+            # Bagian ini saya hapus --headless agar jendela muncul
+            chrome_options.add_argument("--start-maximized") # Langsung layar penuh
+            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            chrome_options.add_experimental_option('useAutomationExtension', False)
             
             try:
-                # Driver manager otomatis menangani versi
+                # Driver manager otomatis mendownload driver yang cocok dengan Chrome Anda
                 service = Service(ChromeDriverManager().install())
                 driver = webdriver.Chrome(service=service, options=chrome_options)
                 
@@ -255,7 +255,7 @@ elif menu == "🏷️ Price":
                 
                 for i, url in enumerate(list_urls):
                     driver.get(url)
-                    time.sleep(4)
+                    time.sleep(5) # Memberi waktu Anda melihat jendela yang terbuka
                     html = driver.page_source
                     nama = extract_product_name(html)
                     promo_txt = extract_promo_text(html)
@@ -274,12 +274,15 @@ elif menu == "🏷️ Price":
                 
                 count = update_excel_database(df_scrape, mc_sync)
                 if count > 0:
-                    st.success(f"🔥 Berhasil update {count} baris!")
+                    st.success(f"🔥 Berhasil update {count} baris ke Excel!")
                     with open(DB_PATH, "rb") as f:
-                        st.download_button("📥 DOWNLOAD EXCEL", f, f"PRICE_CHECK_W{week_inp}_{date_inp_p}.xlsx", use_container_width=True)
+                        st.download_button("📥 DOWNLOAD HASIL EXCEL", f, f"PRICE_CHECK_W{week_inp}_{date_inp_p}.xlsx", use_container_width=True)
                 else:
-                    st.warning("Data tidak cocok dengan PRODCODE di database.")
-                driver.quit()
+                    st.warning("Data tidak ditemukan di database.")
+                
+                # Jendela akan menutup otomatis setelah selesai. 
+                # Hapus baris di bawah jika ingin jendela tetap terbuka.
+                driver.quit() 
                 
             except Exception as e:
-                st.error(f"Gagal Scraper. Pastikan packages.txt sudah ada. Error: {e}")
+                st.error(f"Error saat membuka Jendela Chrome: {e}")
