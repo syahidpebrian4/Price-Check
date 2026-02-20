@@ -1,5 +1,5 @@
-chromium-chromedriver
 chromium
+chromium-driver
 tesseract-ocr
 libtesseract-dev
 libgl1-mesa-glx
