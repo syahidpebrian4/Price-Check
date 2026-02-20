@@ -2,3 +2,4 @@ chromium-chromedriver
 chromium
 tesseract-ocr
 libtesseract-dev
+libgl1-mesa-glx
