@@ -1,91 +1,61 @@
 import streamlit as st
-import pytesseract
-import cv2
-import numpy as np
-import pandas as pd
-import re
 import os
-import io
-import zipfile
-import time
-import base64
-from PIL import Image, ImageDraw
-from fuzzywuzzy import fuzz
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from openpyxl import load_workbook
-from selenium.webdriver.common.by import By
 
-# ================= INITIAL CHECK =================
-# Cek apakah folder database ada agar tidak langsung Crash
-if not os.path.exists("database"):
-    os.makedirs("database")
+# --- PRE-LOAD CHECK ---
+try:
+    import pandas as pd
+    import numpy as np
+    from PIL import Image
+    import pytesseract
+    import cv2
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.chrome.service import Service
+    from webdriver_manager.chrome import ChromeDriverManager
+    from selenium.webdriver.common.by import By
+    import time
+    import re
+except Exception as e:
+    st.error(f"Instalasi library gagal: {e}")
+    st.stop()
 
-# ================= CONFIG & PATHS =================
+# ================= CONFIG =================
 DB_PATH = "database/master_harga.xlsx"
-SHEET_MASTER_IG = "IG"
-COL_IG_NAME = "PRODNAME_IG"
 
-st.set_page_config(page_title="Price Check", layout="wide")
+st.set_page_config(page_title="Price Checker", layout="wide")
 
-# --- HELPER: LOGO ---
-def get_base64_image(image_path):
-    if os.path.exists(image_path):
-        with open(image_path, "rb") as img_file:
-            return base64.b64encode(img_file.read()).decode()
-    return None
+# --- HEADER ---
+st.markdown("<h1 style='text-align: center; color: red;'>🛒 PRICE CHECKER CLOUD</h1>", unsafe_allow_html=True)
 
-logo_b64 = get_base64_image("lotte_logo.png")
-st.markdown(f"""
-    <style>
-        .custom-header {{ position: fixed; top: 0; left: 0; width: 100%; height: 90px; background: white; display: flex; align-items: center; padding: 0 30px; border-bottom: 3px solid #eee; z-index: 999; }}
-        .header-logo {{ height: 55px; margin-right: 25px; }}
-        .main .block-container {{ padding-top: 130px !important; }}
-    </style>
-    <div class="custom-header">
-        <img src="data:image/png;base64,{logo_b64 if logo_b64 else ''}" class="header-logo">
-        <h1 style="color:black; margin:0; font-family: sans-serif;">PRICE CHECK</h1>
-    </div>
-""", unsafe_allow_html=True)
+# --- MENU ---
+menu = st.sidebar.selectbox("Pilih Fitur", ["📸 OCR Image", "🏷️ Scraper Harga"])
 
-# --- FUNGSI LOGIKA ---
-def clean_price(teks):
-    if not teks or teks == "0": return 0
-    return int(re.sub(r'[^\d]', '', str(teks)))
-
-def extract_product_name(html):
-    match = re.search(r'<meta\s+property="og:title"\s+content="(.*?)"', html)
-    return match.group(1).split('|')[0].strip() if match else "N/A"
-
-# --- UI ---
-menu = st.sidebar.radio("Menu", ["📸 Image", "🏷️ Price"])
-
-if menu == "📸 Image":
-    st.subheader("📸 Image OCR Process")
+if menu == "📸 OCR Image":
+    st.subheader("📸 OCR Image")
     if not os.path.exists(DB_PATH):
-        st.error(f"File {DB_PATH} tidak ditemukan di GitHub!")
+        st.error("Folder 'database' atau file 'master_harga.xlsx' tidak ditemukan di repo GitHub!")
     else:
-        m_code = st.sidebar.text_input("MASTER CODE")
-        files = st.file_uploader("Upload Gambar", accept_multiple_files=True)
-        if files and st.button("Jalankan OCR"):
-            st.info("Sedang memproses...")
+        st.success("Database Excel Terdeteksi.")
+    
+    up = st.file_uploader("Upload Foto Label", accept_multiple_files=True)
+    if up:
+        st.write(f"{len(up)} Gambar terunggah.")
 
-elif menu == "🏷️ Price":
-    st.subheader("🏷️ Price Scraper (Cloud Mode)")
+elif menu == "🏷️ Scraper Harga":
+    st.subheader("🏷️ Scraper Harga (Indogrosir)")
+    
     with st.sidebar:
-        user_ig = st.text_input("User Indogrosir")
-        pass_ig = st.text_input("Pass Indogrosir", type="password")
-        mc_sync = st.text_input("Master Code")
-    
-    urls_area = st.text_area("Paste URLs (per baris)")
-    
-    if st.button("🚀 Jalankan Scraper"):
-        if not user_ig or not pass_ig:
-            st.error("Masukkan User & Pass Indogrosir!")
+        user_ig = st.text_input("User/Email")
+        pass_ig = st.text_input("Password", type="password")
+        btn_run = st.button("🚀 Mulai Scrape")
+
+    urls_text = st.text_area("Masukkan Link Produk (satu per baris)")
+
+    if btn_run:
+        if not user_ig or not pass_ig or not urls_text:
+            st.warning("Data login atau URL masih kosong!")
         else:
-            # KONFIGURASI DRIVER CLOUD
+            # KONFIGURASI CHROME CLOUD
             options = Options()
             options.add_argument("--headless")
             options.add_argument("--no-sandbox")
@@ -93,41 +63,41 @@ elif menu == "🏷️ Price":
             options.add_argument("--window-size=1920,1080")
             
             try:
-                with st.spinner("Menyiapkan Chrome di Server..."):
+                with st.spinner("Menyiapkan Browser Server..."):
                     service = Service(ChromeDriverManager().install())
                     driver = webdriver.Chrome(service=service, options=options)
                 
-                # LOGIN PROCESS
-                st.info("Mencoba login...")
+                st.info("Mencoba Login...")
                 driver.get("https://www.indogrosir.co.id/login")
                 time.sleep(3)
                 
+                # Masukkan data login
                 try:
                     driver.find_element(By.NAME, "username").send_keys(user_ig)
                     driver.find_element(By.NAME, "password").send_keys(pass_ig)
                     driver.find_element(By.XPATH, "//button[@type='submit']").click()
                     time.sleep(5)
-                    st.success("Sesi Login Aktif")
                 except:
-                    st.warning("Tombol login tidak ditemukan, mencoba lanjut scraping...")
+                    st.warning("Form login tidak ditemukan, lanjut scraping...")
 
-                # SCRAPING PROCESS
+                urls = [u.strip() for u in urls_text.split("\n") if u.strip()]
                 results = []
-                list_urls = [u.strip() for u in urls_area.split('\n') if u.strip()]
-                prog = st.progress(0)
                 
-                for i, url in enumerate(list_urls):
-                    driver.get(url)
-                    time.sleep(4)
+                for u in urls:
+                    driver.get(u)
+                    time.sleep(3)
                     html = driver.page_source
-                    results.append({
-                        "Nama Produk": extract_product_name(html),
-                        "URL": url
-                    })
-                    prog.progress((i + 1) / len(list_urls))
+                    # Ekstrak Judul
+                    title = "N/A"
+                    match = re.search(r'<meta property="og:title" content="(.*?)"', html)
+                    if match:
+                        title = match.group(1).split('|')[0]
+                    
+                    results.append({"Nama": title, "URL": u})
                 
                 st.table(pd.DataFrame(results))
                 driver.quit()
-                
+                st.success("Selesai!")
+
             except Exception as e:
-                st.error(f"Terjadi kesalahan teknis: {str(e)}")
+                st.error(f"Error pada Selenium: {e}")
