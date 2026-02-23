@@ -191,7 +191,7 @@ if files and m_code and date_inp and week_inp:
         db_ig = pd.read_excel(FILE_PATH, sheet_name=SHEET_MASTER_IG)
         db_targets = {}
         for s in SHEETS_TARGET:
-            df_tmp = pd.read_excel(FILE_PATH, sheet_name=s, header=2)
+            df_tmp = pd.read_excel(FILE_PATH, sheet_name=s, header=3)
             df_tmp.columns = [str(c).strip().upper() for c in df_tmp.columns]
             db_targets[s] = df_tmp
 
@@ -272,4 +272,5 @@ if files and m_code and date_inp and week_inp:
                 st.download_button("??? DOWNLOAD FOTO", zip_buffer.getvalue(), f"{m_code}_{date_inp}.zip", use_container_width=True)
     else:
         st.error("Database Excel tidak ditemukan!")
+
 
